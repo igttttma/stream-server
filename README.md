@@ -14,24 +14,40 @@ Media goes peer to peer (or through TURN); the server only relays signaling.
 
 ```
 npm install
-npm run cert            # certificate for this machine, signed by your CA (made on the first run)
+npm run cert            # local certificate, signed by your CA (made on the first run); VPS: see below
 cp .env.example .env    # set BLIMP_TOKEN and SCREEN_PASSWORD
 npm start
 npm test                # signaling tests + headless Chrome call and screen-control tests
 ```
 
-## Certificates
+## Deploy to a VPS
 
-The BlimpMate apps trust one CA, not one server, so a new server never needs an
-app rebuild. Keep the CA on one machine (your PC):
+A Let's Encrypt certificate for the server's IP address is trusted by every
+browser and app: no warning, no app rebuild, nothing to carry between servers.
+It lasts ~6 days and renews itself.
 
-- The first `npm run cert` creates `certs/ca.pem` (public; the apps bundle it as
-  `BlimpMate_Agent_Clean/src/certs/stream-server-ca.pem`) and `certs/ca-key.pem`
-  (private: never copy it to a server).
-- For a server: `npm run cert -- 203.0.113.7 --out certs/vps`, then copy
-  `certs/vps/cert.pem` and `certs/vps/key.pem` to that server's `certs/` and restart it.
-- Browsers still warn once per server, since they don't know the CA. Import
-  `certs/ca.pem` as a trusted root in the browser or OS to remove the warning.
+1. Open TCP 80 (certificate checks) and 8443 in the VPS firewall / security group.
+2. Copy the server over (with `node_modules`, in case the VPS can't reach GitHub or npm) and your `.env`:
+   ```
+   git archive -o stream-server.tar HEAD && tar -rf stream-server.tar node_modules
+   scp stream-server.tar .env root@<IP>:/tmp/
+   ssh root@<IP> 'mkdir -p /opt/stream-server && tar -xf /tmp/stream-server.tar -C /opt/stream-server && mv /tmp/.env /opt/stream-server/'
+   ```
+3. `ssh root@<IP> 'bash /opt/stream-server/scripts/setup-vps.sh <IP>'`: Node.js, the
+   certificate, renewal every 6 hours, and the `stream-server` systemd service.
+
+Then point the Blimp's apps at `wss://<IP>:8443` and open `https://<IP>:8443/screen`.
+
+## Local certificates (testing without a public IP)
+
+`npm run cert` signs certificates with your own CA. The BlimpMate apps also trust
+that CA (`BlimpMate_Agent_Clean/src/certs/stream-server-ca.pem`), so local and LAN
+servers work too; browsers warn unless you import `certs/ca.pem`.
+
+- The first run creates `certs/ca.pem` (public) and `certs/ca-key.pem` (private:
+  never copy it to a server).
+- Another machine: `npm run cert -- 192.168.1.20 --out certs/lan`, then copy
+  `certs/lan/cert.pem` and `key.pem` to that server's `certs/`.
 
 ## Protocol (JSON over the WebSocket)
 
