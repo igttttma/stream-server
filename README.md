@@ -4,7 +4,7 @@ Streaming server for BlimpMate. Today: 1:1 WebRTC video calls between one BlimpM
 
 - `https://<host>:8443/`: the remote user's page (presence, Call, Accept/Decline, Mute, Camera, Hang up).
 - `wss://<host>:8443/ws?role=remote`: signaling for the browser. The first browser is the remote user; later ones wait in line and are promoted when it leaves.
-- `wss://<host>:8443/ws?role=blimp&token=<BLIMP_TOKEN>`: signaling for the Blimp. A new Blimp connection replaces the old one.
+- `wss://<host>:8443/ws?role=blimp&token=blimpmate`: signaling for the Blimp (the password is fixed in the server and the Blimp app). A new Blimp connection replaces the old one.
 - `/healthz`: presence and call state as JSON.
 - `?as=blimp&token=…` on the page turns it into a Blimp test console.
 
@@ -15,7 +15,7 @@ Media goes peer to peer (or through TURN); the server only relays signaling.
 ```
 npm install
 npm run cert            # local certificate, signed by your CA (made on the first run); VPS: see below
-cp .env.example .env    # set BLIMP_TOKEN and SCREEN_PASSWORD
+cp .env.example .env    # set SCREEN_PASSWORD
 npm start
 npm test                # signaling tests + headless Chrome call and screen-control tests
 ```

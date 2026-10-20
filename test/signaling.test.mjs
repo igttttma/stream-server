@@ -8,12 +8,12 @@ import WebSocket from "ws";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 18443;
-const TOKEN = "test-token";
+const TOKEN = "blimpmate";
 const PASSWORD = "viewer-pass";
 
 const server = spawn(process.execPath, ["server.mjs"], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", BLIMP_TOKEN: TOKEN, RING_SECONDS: "1",
+  env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", RING_SECONDS: "1",
     SCREEN_PASSWORD: PASSWORD },
   stdio: ["ignore", "pipe", "inherit"],
 });

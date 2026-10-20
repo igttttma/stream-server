@@ -11,7 +11,7 @@ set -euo pipefail
 IP="${1:?usage: bash scripts/setup-vps.sh <public IP>}"
 DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$DIR"
-[ -f .env ] || { echo ".env missing: copy .env.example and set SCREEN_PASSWORD (and BLIMP_TOKEN)"; exit 1; }
+[ -f .env ] || { echo ".env missing: copy .env.example and set SCREEN_PASSWORD"; exit 1; }
 [ -d node_modules/ws ] || { echo "node_modules missing: copy it along or run npm ci"; exit 1; }
 
 export DEBIAN_FRONTEND=noninteractive

@@ -20,8 +20,9 @@ const CONFIG = {
   port: Number(process.env.PORT || 8443),
   certFile: process.env.CERT_FILE || join(ROOT, "certs", "cert.pem"),
   keyFile: process.env.KEY_FILE || join(ROOT, "certs", "key.pem"),
-  // Blimp authenticates with this token; empty disables the check (local dev only)
-  blimpToken: process.env.BLIMP_TOKEN || "",
+  // The Blimp signs in with this fixed password (built into the Blimp app too);
+  // the remote side needs none
+  blimpToken: "blimpmate",
   ringSeconds: Number(process.env.RING_SECONDS || 30),
   // Remote screen control: viewers sign in with SCREEN_PASSWORD (unset = off).
   // The agent needs no token: the first device to connect holds the slot.
@@ -53,7 +54,6 @@ function iceServers() {
 }
 
 function tokenMatches(given) {
-  if (!CONFIG.blimpToken) return true;
   const a = Buffer.from(String(given || ""));
   const b = Buffer.from(CONFIG.blimpToken);
   return a.length === b.length && timingSafeEqual(a, b);
@@ -216,7 +216,6 @@ if (!existsSync(CONFIG.certFile) || !existsSync(CONFIG.keyFile)) {
   console.error(`TLS certificate missing (${CONFIG.certFile}). Run: npm run cert`);
   process.exit(1);
 }
-if (!CONFIG.blimpToken) log("WARNING: BLIMP_TOKEN is not set; any client can connect as the blimp");
 if (!screenHub.enabled) log("Screen control is off (set SCREEN_PASSWORD to turn it on)");
 
 const server = createServer(

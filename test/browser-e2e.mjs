@@ -14,14 +14,14 @@ import WebSocket from "ws";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 18444;
 const CDP_PORT = 9555;
-const TOKEN = "e2e-token";
+const TOKEN = "blimpmate";
 const PASSWORD = "e2e-pass";
 const CHROME = process.env.CHROME || "C:/Program Files/Google/Chrome/Application/chrome.exe";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const server = spawn(process.execPath, ["server.mjs"], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", BLIMP_TOKEN: TOKEN, STUN_URLS: "",
+  env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", STUN_URLS: "",
     SCREEN_PASSWORD: PASSWORD },
   stdio: ["ignore", "pipe", "inherit"],
 });
