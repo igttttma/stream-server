@@ -488,6 +488,10 @@ setInterval(async () => {
     inputMs != null ? `input ${inputMs} ms` : null,
     route,
     encoderStats?.codec ? `${encoderStats.codec.replace("video/", "")} (${encoderStats.encoder})` : null,
+    // On the Blimp: frames captured from the screen, frames encoded, time per frame
+    encoderStats?.captured != null ? `captured ${Math.round(encoderStats.captured)} fps` : null,
+    encoderStats?.fps != null ? `encoded ${Math.round(encoderStats.fps)} fps` : null,
+    encoderStats?.encode_ms != null ? `encode ${encoderStats.encode_ms} ms` : null,
     encoderStats?.limit && encoderStats.limit !== "none" ? `limited by ${encoderStats.limit}` : null,
   ];
   $("stats").textContent = parts.filter(Boolean).join(" · ");
