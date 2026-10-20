@@ -1,0 +1,15 @@
+{
+  "name": "stream-server",
+  "version": "0.1.0",
+  "description": "1:1 WebRTC video calls between BlimpMate and one remote browser user: HTTPS page, WSS signaling, presence.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node --env-file-if-exists=.env server.mjs",
+    "cert": "node scripts/gen-cert.mjs",
+    "test": "node test/signaling.test.mjs && node test/browser-e2e.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
+  }
+}

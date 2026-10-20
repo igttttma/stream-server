@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Call Blimp</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --surface: #ffffff; --text: #16181d; --muted: #646b78; --border: #dfe2e8;
+    --accent: #2f6fed; --ok: #1f9d55; --danger: #d93a3a; --video-bg: #0d0f13;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1115; --surface: #181b21; --text: #e9ebef; --muted: #9aa1ad; --border: #2a2f38;
+      --accent: #5b8cff; --ok: #3ccf7d; --danger: #ff5c5c; --video-bg: #000;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1115; --surface: #181b21; --text: #e9ebef; --muted: #9aa1ad; --border: #2a2f38;
+    --accent: #5b8cff; --ok: #3ccf7d; --danger: #ff5c5c; --video-bg: #000;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 999px;
+    border: 1px solid var(--border); font-size: 14px; color: var(--muted); white-space: nowrap;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+  .pill[data-s="online"] .dot { background: var(--ok); }
+  .pill[data-s="in_call"] .dot { background: var(--accent); }
+  main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 16px; min-height: 0; }
+  .panel { width: 100%; max-width: 380px; text-align: center; }
+  .panel h2 { font-size: 22px; margin: 0 0 6px; font-weight: 600; }
+  .panel p { margin: 0 0 22px; color: var(--muted); }
+  .actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  button {
+    font: inherit; font-weight: 600; border: 0; border-radius: 999px; padding: 12px 26px; cursor: pointer;
+    background: var(--accent); color: #fff; min-width: 120px;
+  }
+  button.ok { background: var(--ok); }
+  button.danger { background: var(--danger); }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  .ringing h2 { animation: pulse 1.2s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: .55; } }
+  #callView { display: none; position: fixed; inset: 0; z-index: 10; background: var(--video-bg); }
+  body.in-call main { display: none; }
+  body.in-call #callView { display: block; }
+  #remoteVideo { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; }
+  #localVideo {
+    position: absolute; right: 16px; top: 16px; width: 24%; max-width: 220px; aspect-ratio: 16 / 9;
+    object-fit: cover; border-radius: 10px; border: 2px solid rgba(255,255,255,.25); background: #222;
+    transform: scaleX(-1);
+  }
+  .controls {
+    position: absolute; left: 0; right: 0; bottom: 0; display: flex; gap: 12px; justify-content: center;
+    padding: 16px 16px calc(16px + env(safe-area-inset-bottom)); background: linear-gradient(transparent, rgba(0,0,0,.55));
+  }
+  .controls button { min-width: 0; padding: 12px 18px; }
+  .controls button.off { background: #555; }
+  #callInfo { position: absolute; left: 16px; top: 16px; color: #fff; font-size: 14px; text-shadow: 0 1px 3px #000; }
+  /* Blimp's display is 16:9 landscape: phones are asked to turn sideways */
+  #rotateHint {
+    display: none; position: absolute; inset: 0; align-items: center; justify-content: center; text-align: center;
+    padding: 24px; background: rgba(0,0,0,.6); color: #fff; font-size: 18px; font-weight: 600; pointer-events: none;
+  }
+  @media (orientation: portrait) and (pointer: coarse) {
+    body.in-call #rotateHint { display: flex; }
+  }
+  #toast {
+    position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); background: var(--text); color: var(--bg);
+    padding: 8px 16px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none;
+    max-width: calc(100% - 32px); z-index: 20;
+  }
+  #toast.show { opacity: .92; }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Call Blimp</h1>
+  <span class="pill" id="presence" data-s="offline"><span class="dot"></span><span id="presenceText">Connecting…</span></span>
+</header>
+
+<main>
+  <section class="panel" id="panel"></section>
+</main>
+
+<section id="callView">
+  <video id="remoteVideo" autoplay playsinline></video>
+  <video id="localVideo" autoplay playsinline muted></video>
+  <div id="callInfo"></div>
+  <div id="rotateHint">Turn your phone sideways.<br>Blimp's screen is landscape.</div>
+  <div class="controls">
+    <button id="micBtn" class="ghost" style="color:#fff">Mute</button>
+    <button id="camBtn" class="ghost" style="color:#fff">Camera off</button>
+    <button id="hangupBtn" class="danger">Hang up</button>
+  </div>
+</section>
+
+<div id="toast" role="status"></div>
+
+<script type="module">
+import { CallClient } from "./call-client.mjs";
+
+// ?as=blimp&token=… turns this page into a Blimp test console (the real Blimp
+// is the BlimpMate client). Everyone else is the remote user.
+const params = new URLSearchParams(location.search);
+const asBlimp = params.get("as") === "blimp";
+const me = asBlimp ? "blimp" : "remote";
+const peerName = asBlimp ? "Remote user" : "Blimp";
+const wsUrl = new URL("ws", location.href.replace(/^http/, "ws"));
+wsUrl.search = asBlimp ? `?role=blimp&token=${encodeURIComponent(params.get("token") || "")}` : "?role=remote";
+
+const $ = (id) => document.getElementById(id);
+
+// ---- landscape video ----
+// Blimp shows the remote video on a fixed 16:9 landscape screen. Video that
+// isn't already 16:9 landscape (phones, 4:3 webcams) is center-cropped to
+// 960x540 through a canvas, so Blimp always gets landscape frames.
+const OUT_W = 960, OUT_H = 540, OUT_FPS = 24;
+const isPhone = matchMedia("(pointer: coarse)").matches;
+
+async function landscapeMedia() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    video: { facingMode: "user", width: { ideal: 1280 }, height: { ideal: 720 }, aspectRatio: { ideal: 16 / 9 }, frameRate: { ideal: OUT_FPS } },
+  });
+  const [cam] = stream.getVideoTracks();
+  const { width, height } = cam?.getSettings() || {};
+  // Phones can rotate mid-call, so they always go through the crop
+  if (!cam || (!isPhone && width && height && Math.abs(width / height - 16 / 9) < 0.02)) return stream;
+
+  const video = document.createElement("video");
+  video.muted = true;
+  video.playsInline = true;
+  video.srcObject = new MediaStream([cam]);
+  await video.play().catch(() => {});
+  const canvas = Object.assign(document.createElement("canvas"), { width: OUT_W, height: OUT_H });
+  const g = canvas.getContext("2d");
+  const timer = setInterval(() => {
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw || !vh) return;
+    const scale = Math.max(OUT_W / vw, OUT_H / vh);
+    const sw = OUT_W / scale, sh = OUT_H / scale;
+    g.drawImage(video, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, OUT_W, OUT_H);
+  }, 1000 / OUT_FPS);
+  const out = canvas.captureStream(OUT_FPS).getVideoTracks()[0];
+  // Stopping the sent track (hang up) also releases the camera
+  const stopOut = out.stop.bind(out);
+  out.stop = () => {
+    clearInterval(timer);
+    cam.stop();
+    video.srcObject = null;
+    stopOut();
+  };
+  return new MediaStream([...stream.getAudioTracks(), out]);
+}
+
+// Phones: full screen, locked to landscape where the browser allows it (Android
+// Chrome). Elsewhere (iOS) the rotate hint asks the user to turn the phone.
+function enterLandscape() {
+  if (!isPhone || document.fullscreenElement) return;
+  const el = document.documentElement;
+  const req = el.requestFullscreen?.({ navigationUI: "hide" });
+  Promise.resolve(req).then(() => screen.orientation?.lock?.("landscape")).catch(() => {});
+}
+function leaveLandscape() {
+  try { screen.orientation?.unlock?.(); } catch {}
+  if (document.fullscreenElement) document.exitFullscreen().catch(() => {});
+}
+
+const client = new CallClient({ url: wsUrl.toString(), getMedia: landscapeMedia });
+window.callClient = client; // for debugging and automated tests
+
+if (asBlimp) {
+  document.title = "Blimp test console";
+  $("title").textContent = "Blimp test console";
+}
+
+// ---- tones (generated, no audio files) ----
+let audioCtx = null;
+let toneTimer = null;
+function ctx() {
+  audioCtx ||= new AudioContext();
+  if (audioCtx.state === "suspended") audioCtx.resume().catch(() => {});
+  return audioCtx;
+}
+function beep(freqs, seconds) {
+  const c = ctx();
+  const gain = c.createGain();
+  gain.gain.value = 0.08;
+  gain.connect(c.destination);
+  for (const f of freqs) {
+    const osc = c.createOscillator();
+    osc.frequency.value = f;
+    osc.connect(gain);
+    osc.start();
+    osc.stop(c.currentTime + seconds);
+  }
+}
+function startTone(kind) {
+  stopTone();
+  // Incoming: two short bursts every 3s. Outgoing ringback: 2s on, 4s off.
+  const play = kind === "incoming"
+    ? () => { beep([480, 620], 0.4); setTimeout(() => beep([480, 620], 0.4), 600); }
+    : () => beep([440, 480], 2);
+  play();
+  toneTimer = setInterval(play, kind === "incoming" ? 3000 : 6000);
+}
+function stopTone() {
+  clearInterval(toneTimer);
+  toneTimer = null;
+}
+document.addEventListener("pointerdown", () => ctx(), { once: true });
+
+// ---- rendering ----
+let waiting = false;
+const REASONS = {
+  declined: `${peerName} declined the call`,
+  cancelled: `${peerName} cancelled the call`,
+  no_answer: "No answer",
+  hangup: "Call ended",
+  peer_left: `${peerName} went offline`,
+  connection_lost: "Connection lost",
+};
+
+function toast(text) {
+  const t = $("toast");
+  t.textContent = text;
+  t.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove("show"), 3500);
+}
+
+function render() {
+  const peerStatus = client.connected ? client.presence[asBlimp ? "remote" : "blimp"] : "offline";
+  const pill = $("presence");
+  pill.dataset.s = peerStatus;
+  $("presenceText").textContent = !client.connected ? "Connecting…"
+    : waiting ? "Someone else is using this page"
+    : `${peerName} ${peerStatus === "in_call" ? "in a call" : peerStatus}`;
+
+  const { state, direction } = client.call;
+  document.body.classList.toggle("in-call", state === "in_call");
+  const panel = $("panel");
+  panel.className = "panel";
+
+  if (waiting) {
+    panel.innerHTML = `<h2>Line busy</h2><p>Another person is already connected. You'll be connected when they leave.</p>`;
+  } else if (state === "ringing" && direction === "incoming") {
+    panel.classList.add("ringing");
+    panel.innerHTML = `<h2>${peerName} is calling</h2><p>Video call</p>
+      <div class="actions"><button class="danger" id="declineBtn">Decline</button><button class="ok" id="acceptBtn">Accept</button></div>`;
+    $("acceptBtn").onclick = async () => {
+      enterLandscape();
+      // Get the camera/mic permission prompt out of the way before answering
+      try { await client.ensureMedia(); } catch (e) { return toast(`Camera/mic unavailable: ${e.message}`); }
+      client.accept();
+    };
+    $("declineBtn").onclick = () => client.decline();
+  } else if (state === "ringing") {
+    panel.classList.add("ringing");
+    panel.innerHTML = `<h2>Calling ${peerName}…</h2><p>Waiting for an answer</p>
+      <div class="actions"><button class="danger" id="cancelBtn">Cancel</button></div>`;
+    $("cancelBtn").onclick = () => client.hangup();
+  } else {
+    const online = peerStatus === "online";
+    panel.innerHTML = `<h2>${peerName} is ${online ? "online" : "offline"}</h2>
+      <p>${online ? "Start a video call." : `You can call when ${peerName} comes online.`}</p>
+      <div class="actions"><button id="callBtn" ${online ? "" : "disabled"}>Call</button></div>`;
+    $("callBtn").onclick = async () => {
+      ctx();
+      enterLandscape();
+      try { await client.ensureMedia(); } catch (e) { return toast(`Camera/mic unavailable: ${e.message}`); }
+      if (!client.invite()) toast("Not connected");
+    };
+  }
+
+  if (state === "ringing") startTone(direction);
+  else stopTone();
+}
+
+client.addEventListener("status", render);
+client.addEventListener("presence", render);
+client.addEventListener("waiting", () => { waiting = true; render(); });
+client.addEventListener("welcome", () => { waiting = false; render(); });
+client.addEventListener("call", (e) => {
+  waiting = false;
+  if (e.detail.state === "idle") leaveLandscape();
+  if (e.detail.state === "idle" && e.detail.reason) toast(REASONS[e.detail.reason] || `Call ended (${e.detail.reason})`);
+  if (e.detail.state === "in_call") {
+    micOn = camOn = true;
+    syncControls();
+    $("callInfo").textContent = `In a call with ${peerName}`;
+  }
+  render();
+});
+client.addEventListener("error", (e) => {
+  const err = e.detail.error;
+  client.releaseMedia();
+  if (client.call.state === "idle") leaveLandscape();
+  toast(err === "peer_offline" ? `${peerName} is offline` : err === "busy" ? "Line busy"
+    : err === "replaced" ? "Signed in somewhere else" : `Error: ${err}`);
+});
+client.addEventListener("connection", (e) => {
+  const s = e.detail.state;
+  $("callInfo").textContent = s === "connected" ? `In a call with ${peerName}`
+    : s === "disconnected" ? "Reconnecting…" : s === "connecting" || s === "new" ? "Connecting…" : $("callInfo").textContent;
+});
+client.addEventListener("local-stream", (e) => { $("localVideo").srcObject = e.detail; });
+client.addEventListener("remote-stream", (e) => {
+  const v = $("remoteVideo");
+  if (v.srcObject !== e.detail) v.srcObject = e.detail;
+  if (e.detail) v.play().catch(() => {});
+});
+
+let micOn = true, camOn = true;
+function syncControls() {
+  $("micBtn").textContent = micOn ? "Mute" : "Unmute";
+  $("micBtn").classList.toggle("off", !micOn);
+  $("camBtn").textContent = camOn ? "Camera off" : "Camera on";
+  $("camBtn").classList.toggle("off", !camOn);
+}
+$("micBtn").onclick = () => { micOn = !micOn; client.setMicEnabled(micOn); syncControls(); };
+$("camBtn").onclick = () => { camOn = !camOn; client.setCameraEnabled(camOn); syncControls(); };
+$("hangupBtn").onclick = () => client.hangup();
+
+client.connect();
+render();
+</script>
+</body>
+</html>

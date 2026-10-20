@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Blimp Screen</title>
+<style>
+  :root {
+    --bg: #f4f5f7; --surface: #ffffff; --text: #16181d; --muted: #646b78; --border: #dfe2e8;
+    --accent: #2f6fed; --ok: #1f9d55; --danger: #d93a3a; --warn: #c27c0e; --video-bg: #0d0f13;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1115; --surface: #181b21; --text: #e9ebef; --muted: #9aa1ad; --border: #2a2f38;
+      --accent: #5b8cff; --ok: #3ccf7d; --danger: #ff5c5c; --warn: #f0b429; --video-bg: #000;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f1115; --surface: #181b21; --text: #e9ebef; --muted: #9aa1ad; --border: #2a2f38;
+    --accent: #5b8cff; --ok: #3ccf7d; --danger: #ff5c5c; --warn: #f0b429; --video-bg: #000;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text);
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 14px 16px; border-bottom: 1px solid var(--border); background: var(--surface);
+  }
+  header h1 { font-size: 17px; margin: 0; font-weight: 600; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 8px; padding: 4px 12px; border-radius: 999px;
+    border: 1px solid var(--border); font-size: 14px; color: var(--muted); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: none; }
+  .pill[data-s="online"] .dot { background: var(--ok); }
+  .pill[data-s="streaming"] .dot { background: var(--accent); }
+  main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 16px; min-height: 0; }
+  .panel { width: 100%; max-width: 380px; text-align: center; }
+  .panel h2 { font-size: 22px; margin: 0 0 6px; font-weight: 600; }
+  .panel p { margin: 0 0 22px; color: var(--muted); }
+  .actions { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+  form.signin { display: flex; flex-direction: column; gap: 12px; }
+  input[type="password"], input[type="text"] {
+    font: inherit; padding: 10px 14px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text); min-width: 0;
+  }
+  button {
+    font: inherit; font-weight: 600; border: 0; border-radius: 999px; padding: 12px 26px; cursor: pointer;
+    background: var(--accent); color: #fff; min-width: 120px;
+  }
+  button.danger { background: var(--danger); }
+  button.ghost { background: transparent; color: var(--text); border: 1px solid var(--border); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+
+  /* ---- streaming view ---- */
+  #view { display: none; flex: 1; flex-direction: column; min-height: 0; background: var(--video-bg); }
+  body.streaming main { display: none; }
+  body.streaming #view { display: flex; }
+  #stage {
+    position: relative; flex: 1; min-height: 0; outline: none; touch-action: none;
+    user-select: none; -webkit-user-select: none; cursor: crosshair;
+  }
+  #stage:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+  #screen { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+  #stage.mirrored #screen { transform: scaleX(-1); }
+  #trail { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+  #stats {
+    position: absolute; left: 12px; top: 10px; color: #fff; font-size: 12px; text-shadow: 0 1px 3px #000;
+    font-variant-numeric: tabular-nums; pointer-events: none;
+  }
+  #waitMsg {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #ccd;
+    font-size: 15px; pointer-events: none; text-align: center; padding: 16px;
+  }
+  .toolbar {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); background: var(--surface);
+    border-top: 1px solid var(--border);
+  }
+  .toolbar button { min-width: 0; padding: 8px 14px; font-size: 14px; }
+  .toolbar .sep { width: 1px; align-self: stretch; background: var(--border); margin: 0 2px; }
+  .toolbar form { display: flex; gap: 6px; flex: 1 1 200px; max-width: 360px; min-width: 0; }
+  .toolbar form input { flex: 1; padding: 7px 12px; font-size: 14px; }
+  select {
+    font: inherit; font-size: 14px; padding: 7px 10px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text);
+  }
+  .toggle {
+    display: inline-flex; align-items: center; gap: 6px; font-size: 14px; padding: 6px 12px;
+    border: 1px solid var(--border); border-radius: 999px; cursor: pointer; user-select: none;
+  }
+  .toggle input { margin: 0; accent-color: var(--accent); }
+  .hint { color: var(--muted); font-size: 12px; width: 100%; text-align: center; }
+  @media (pointer: coarse) { .hint { display: none; } }
+
+  #toast {
+    position: fixed; left: 50%; bottom: 96px; transform: translateX(-50%); background: var(--text); color: var(--bg);
+    padding: 8px 16px; border-radius: 8px; font-size: 14px; opacity: 0; transition: opacity .2s; pointer-events: none;
+    max-width: calc(100% - 32px); z-index: 20;
+  }
+  #toast.show { opacity: .92; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Blimp screen</h1>
+  <span class="pill" id="presence" data-s="offline"><span class="dot"></span><span id="presenceText">Signed out</span></span>
+</header>
+
+<main>
+  <section class="panel" id="panel"></section>
+</main>
+
+<section id="view">
+  <div id="stage" tabindex="0" aria-label="Blimp screen. Click to tap, drag to swipe, type to enter text.">
+    <video id="screen" autoplay playsinline muted></video>
+    <canvas id="trail"></canvas>
+    <div id="waitMsg">Connecting to the Blimp…</div>
+    <div id="stats"></div>
+  </div>
+  <div class="toolbar">
+    <button class="ghost" data-key="back" title="Back (right-click, Esc)">Back</button>
+    <button class="ghost" data-key="home" title="Home (middle-click)">Home</button>
+    <button class="ghost" data-key="recents" title="Recent apps">Recents</button>
+    <button class="ghost" data-key="notifications" title="Notification shade">Notifications</button>
+    <button class="ghost" data-key="blimp_app" title="Bring the Blimp app to the front">Blimp app</button>
+    <span class="sep"></span>
+    <form id="typeForm" autocomplete="off">
+      <input type="text" id="typeText" placeholder="Type text, Enter to send" enterkeyhint="send">
+    </form>
+    <button class="ghost" data-key="enter" title="Enter key">Enter</button>
+    <select id="quality" title="Stream quality">
+      <option value="low">Low (480p)</option>
+      <option value="medium" selected>Medium (720p)</option>
+      <option value="high">High (1080p)</option>
+    </select>
+    <label class="toggle" title="Flip the picture left to right (for a display that is mirrored for rear projection)">
+      <input type="checkbox" id="mirror" autocomplete="off"> Mirror
+    </label>
+    <button class="danger" id="stopBtn">Stop</button>
+    <div class="hint">Click to tap, hold to long-press, drag to swipe, scroll wheel to scroll. Right-click is Back. Click the screen, then type to enter text.</div>
+  </div>
+</section>
+
+<div id="toast" role="status"></div>
+
+<script type="module">
+import { ScreenViewer } from "./screen-client.mjs";
+
+const $ = (id) => document.getElementById(id);
+const wsUrl = new URL("ws", location.href.replace(/^http/, "ws"));
+wsUrl.search = "";
+const viewer = new ScreenViewer({ url: wsUrl.toString() });
+window.screenViewer = viewer; // for debugging and automated tests
+
+const PASSWORD_KEY = "blimpmate.screen_password";
+let authError = null;
+
+function toast(text) {
+  const t = $("toast");
+  t.textContent = text;
+  t.classList.add("show");
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove("show"), 3500);
+}
+
+function savedPassword() {
+  try { return sessionStorage.getItem(PASSWORD_KEY) || ""; } catch { return ""; }
+}
+function savePassword(p) {
+  try { p ? sessionStorage.setItem(PASSWORD_KEY, p) : sessionStorage.removeItem(PASSWORD_KEY); } catch {}
+}
+
+// ---- rendering ----
+const REASONS = {
+  stopped: "Stopped",
+  agent_left: "The Blimp went offline",
+  viewer_left: "Stopped",
+  connection_lost: "Connection lost",
+};
+const ERRORS = {
+  unauthorized: "Wrong password",
+  locked: "Too many wrong passwords. Try again in a minute.",
+  screen_disabled: "Screen control isn't turned on on this server",
+  agent_offline: "The Blimp is offline",
+  busy: "Someone else is connected. Try again when they leave.",
+};
+
+function deviceLabel(d) {
+  if (!d) return "";
+  return [d.model, d.android && `Android ${d.android}`].filter(Boolean).join(", ");
+}
+
+function render() {
+  const signedIn = viewer.connected && viewer.signedIn;
+  const { agent, device } = viewer.presence;
+  const pill = $("presence");
+  pill.dataset.s = signedIn ? agent : "offline";
+  $("presenceText").textContent = !signedIn ? (viewer.closed ? "Signed out" : "Connecting…")
+    : agent === "offline" ? "Blimp offline"
+    : agent === "streaming" ? "Watching"
+    : `Blimp online${device ? ` (${deviceLabel(device)})` : ""}`;
+
+  const state = viewer.session.state;
+  document.body.classList.toggle("streaming", state !== "idle");
+  const panel = $("panel");
+
+  if (!signedIn && viewer.closed) {
+    panel.innerHTML = `<h2>Sign in</h2><p>${authError ? ERRORS[authError] || authError : "Enter the screen control password."}</p>
+      <form class="signin" id="signin"><input type="password" id="pw" placeholder="Password" autocomplete="current-password" required>
+      <button type="submit">Sign in</button></form>`;
+    $("signin").onsubmit = (e) => {
+      e.preventDefault();
+      authError = null;
+      const p = $("pw").value;
+      savePassword(p);
+      viewer.connect(p);
+      render();
+    };
+    $("pw").focus();
+  } else if (!signedIn) {
+    panel.innerHTML = `<h2>Connecting…</h2><p>Signing in to the stream server.</p>`;
+  } else if (state === "idle") {
+    panel.innerHTML = `<h2>${agent === "offline" ? "The Blimp is offline" : "The Blimp is online"}</h2>
+      <p>${agent === "offline" ? "You can watch its screen when it comes online." : deviceLabel(device) || "Watch and control its screen."}</p>
+      <div class="actions">
+        <button id="watchBtn" ${agent === "online" ? "" : "disabled"}>Watch screen</button>
+        <button class="ghost" id="signoutBtn">Sign out</button>
+      </div>`;
+    $("watchBtn").onclick = () => viewer.start() || toast("Not connected");
+    $("signoutBtn").onclick = () => { savePassword(""); viewer.close(); render(); };
+  }
+}
+
+viewer.addEventListener("status", render);
+viewer.addEventListener("welcome", render);
+viewer.addEventListener("presence", render);
+viewer.addEventListener("session", (e) => {
+  const { state, reason, previous } = e.detail;
+  if (state === "idle" && previous !== "idle" && reason) toast(REASONS[reason] || `Stopped (${reason})`);
+  if (state === "starting") {
+    $("waitMsg").textContent = "Connecting to the Blimp…";
+    $("waitMsg").style.display = "flex";
+  }
+  if (state !== "idle") $("stage").focus();
+  render();
+});
+viewer.addEventListener("error", (e) => {
+  const err = e.detail.error;
+  if (err === "unauthorized" || err === "locked" || err === "screen_disabled" || err === "busy") {
+    authError = err;
+    // The password was right when someone else is connected
+    if (err !== "busy") savePassword("");
+  }
+  toast(ERRORS[err] || `Error: ${err}`);
+  render();
+});
+viewer.addEventListener("stream", (e) => {
+  const v = $("screen");
+  if (v.srcObject !== e.detail) v.srcObject = e.detail;
+  if (e.detail) v.play().catch(() => {});
+});
+viewer.addEventListener("channel", (e) => {
+  if (e.detail.open) sendQuality();
+});
+viewer.addEventListener("message", (e) => onAgentMessage(e.detail));
+$("screen").addEventListener("loadeddata", () => { $("waitMsg").style.display = "none"; });
+$("screen").addEventListener("resize", resizeTrail);
+
+// ---- input ----
+// Positions are fractions (0..1) of the device screen, so the stream size doesn't matter.
+let seq = 0;
+const sentAt = new Map();
+let inputMs = null;
+
+function send(event) {
+  event.id = ++seq;
+  if (!viewer.sendInput(event)) return false;
+  sentAt.set(event.id, performance.now());
+  return true;
+}
+
+function onAgentMessage(m) {
+  if (m.t === "ack" && sentAt.has(m.id)) {
+    inputMs = Math.round(performance.now() - sentAt.get(m.id));
+    sentAt.delete(m.id);
+    if (m.ok === false && m.error) toast(m.error);
+  }
+}
+
+// The rectangle the video occupies inside the stage (object-fit: contain)
+function videoRect() {
+  const v = $("screen");
+  const box = $("stage").getBoundingClientRect();
+  const vw = v.videoWidth, vh = v.videoHeight;
+  if (!vw || !vh) return null;
+  const scale = Math.min(box.width / vw, box.height / vh);
+  const w = vw * scale, h = vh * scale;
+  return { left: box.left + (box.width - w) / 2, top: box.top + (box.height - h) / 2, width: w, height: h };
+}
+
+function toDevice(e) {
+  const r = videoRect();
+  if (!r) return null;
+  const x = (e.clientX - r.left) / r.width, y = (e.clientY - r.top) / r.height;
+  return [Math.min(1, Math.max(0, x)), Math.min(1, Math.max(0, y))];
+}
+
+// A whole stroke (press to release) is sent as one gesture with its timing,
+// so taps, long presses, swipes and drags all go the same way.
+let stroke = null;
+const stage = $("stage");
+
+stage.addEventListener("contextmenu", (e) => e.preventDefault());
+stage.addEventListener("pointerdown", (e) => {
+  stage.focus();
+  if (e.button === 2) return send({ t: "key", key: "back" });
+  if (e.button === 1) { e.preventDefault(); return send({ t: "key", key: "home" }); }
+  if (e.button !== 0 || stroke) return;
+  const p = toDevice(e);
+  if (!p) return;
+  stage.setPointerCapture(e.pointerId);
+  stroke = { pointerId: e.pointerId, t0: performance.now(), points: [[p[0], p[1], 0]], screen: [[e.clientX, e.clientY]] };
+  drawTrail();
+});
+stage.addEventListener("pointermove", (e) => {
+  if (!stroke || e.pointerId !== stroke.pointerId) return;
+  const p = toDevice(e);
+  if (!p) return;
+  const ms = Math.round(performance.now() - stroke.t0);
+  const last = stroke.points.at(-1);
+  if (ms - last[2] < 8) return;
+  stroke.points.push([p[0], p[1], ms]);
+  stroke.screen.push([e.clientX, e.clientY]);
+  drawTrail();
+});
+function endStroke(e, cancelled) {
+  if (!stroke || e.pointerId !== stroke.pointerId) return;
+  const p = toDevice(e);
+  const ms = Math.round(performance.now() - stroke.t0);
+  if (p) stroke.points.push([p[0], p[1], ms]);
+  const points = stroke.points;
+  stroke = null;
+  clearTrail();
+  if (!cancelled) send({ t: "gesture", points });
+}
+stage.addEventListener("pointerup", (e) => endStroke(e, false));
+stage.addEventListener("pointercancel", (e) => endStroke(e, true));
+
+// Scroll wheel: a short swipe the other way, gathered over 80 ms
+let wheel = null;
+stage.addEventListener("wheel", (e) => {
+  e.preventDefault();
+  const p = toDevice(e);
+  if (!p) return;
+  if (!wheel) {
+    wheel = { p, dy: 0, dx: 0 };
+    setTimeout(() => {
+      const { p: [x, y], dx, dy } = wheel;
+      wheel = null;
+      // About a third of the screen per wheel notch (100 px of deltaY)
+      const fy = Math.max(-0.45, Math.min(0.45, -dy / 300)), fx = Math.max(-0.45, Math.min(0.45, -dx / 300));
+      const clamp = (v) => Math.min(0.98, Math.max(0.02, v));
+      send({ t: "gesture", points: [[x, y, 0], [clamp(x + fx), clamp(y + fy), 180]] });
+    }, 80);
+  }
+  wheel.dy += e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+  wheel.dx += e.deltaMode === 1 ? e.deltaX * 33 : e.deltaX;
+}, { passive: false });
+
+// Typing while the screen has focus: text is gathered for 40 ms, keys go at once
+let typed = "";
+stage.addEventListener("keydown", (e) => {
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const keys = { Backspace: "backspace", Enter: "enter", Escape: "back", Tab: "tab" };
+  if (keys[e.key]) {
+    e.preventDefault();
+    flushTyped();
+    send({ t: "key", key: keys[e.key] });
+  } else if (e.key.length === 1) {
+    e.preventDefault();
+    if (!typed) setTimeout(flushTyped, 40);
+    typed += e.key;
+  }
+});
+stage.addEventListener("paste", (e) => {
+  const text = e.clipboardData?.getData("text");
+  if (text) { e.preventDefault(); flushTyped(); send({ t: "text", text }); }
+});
+function flushTyped() {
+  if (!typed) return;
+  const text = typed;
+  typed = "";
+  send({ t: "text", text });
+}
+
+$("typeForm").onsubmit = (e) => {
+  e.preventDefault();
+  const text = $("typeText").value;
+  if (text && send({ t: "text", text })) $("typeText").value = "";
+};
+for (const b of document.querySelectorAll("[data-key]")) b.onclick = () => send({ t: "key", key: b.dataset.key });
+$("quality").onchange = sendQuality;
+function sendQuality() { send({ t: "quality", preset: $("quality").value }); }
+$("stopBtn").onclick = () => viewer.stop();
+
+// Mirror: flips only the picture, for a Blimp whose display output is mirrored
+// (rear projection). Input needs no change: positions are taken from where the
+// viewer sees things, which with the flip is where Android has them. This
+// browser remembers the choice.
+const MIRROR_KEY = "blimpmate.screen_mirror";
+function applyMirror(on) {
+  $("mirror").checked = on;
+  stage.classList.toggle("mirrored", on);
+}
+try { applyMirror(localStorage.getItem(MIRROR_KEY) === "1"); } catch { applyMirror(false); }
+$("mirror").onchange = () => {
+  applyMirror($("mirror").checked);
+  try { localStorage.setItem(MIRROR_KEY, $("mirror").checked ? "1" : "0"); } catch {}
+};
+
+// ---- feedback: the stroke being drawn ----
+function resizeTrail() {
+  const c = $("trail"), r = stage.getBoundingClientRect();
+  c.width = Math.round(r.width * devicePixelRatio);
+  c.height = Math.round(r.height * devicePixelRatio);
+}
+new ResizeObserver(resizeTrail).observe(stage);
+function drawTrail() {
+  const c = $("trail"), g = c.getContext("2d"), r = stage.getBoundingClientRect();
+  g.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, -r.left * devicePixelRatio, -r.top * devicePixelRatio);
+  g.clearRect(r.left, r.top, r.width, r.height);
+  const pts = stroke.screen;
+  g.strokeStyle = "rgba(91,140,255,.85)";
+  g.fillStyle = "rgba(91,140,255,.35)";
+  g.lineWidth = 4;
+  g.lineCap = g.lineJoin = "round";
+  g.beginPath();
+  pts.forEach(([x, y], i) => (i ? g.lineTo(x, y) : g.moveTo(x, y)));
+  g.stroke();
+  const [x, y] = pts.at(-1);
+  g.beginPath();
+  g.arc(x, y, 14, 0, Math.PI * 2);
+  g.fill();
+}
+function clearTrail() {
+  const c = $("trail");
+  c.getContext("2d").clearRect(0, 0, c.width, c.height);
+}
+
+// ---- stats ----
+let lastStats = null;
+setInterval(async () => {
+  const pc = viewer.pc;
+  if (!pc || viewer.session.state === "idle") { $("stats").textContent = ""; lastStats = null; return; }
+  const report = await pc.getStats();
+  let video = null, pair = null;
+  const byId = new Map();
+  report.forEach((s) => {
+    byId.set(s.id, s);
+    if (s.type === "inbound-rtp" && s.kind === "video") video = s;
+    if (s.type === "candidate-pair" && s.nominated && s.state === "succeeded") pair = s;
+  });
+  if (!video) return;
+  const now = performance.now();
+  const kbps = lastStats ? Math.round(((video.bytesReceived - lastStats.bytes) * 8) / (now - lastStats.at)) : 0;
+  lastStats = { bytes: video.bytesReceived, at: now };
+  const local = pair && byId.get(pair.localCandidateId);
+  const route = local?.candidateType === "relay" ? "relay" : "direct";
+  const parts = [
+    `${video.frameWidth || 0}x${video.frameHeight || 0}`,
+    `${Math.round(video.framesPerSecond || 0)} fps`,
+    `${kbps} kbps`,
+    pair?.currentRoundTripTime != null ? `rtt ${Math.round(pair.currentRoundTripTime * 1000)} ms` : null,
+    inputMs != null ? `input ${inputMs} ms` : null,
+    route,
+  ];
+  $("stats").textContent = parts.filter(Boolean).join(" · ");
+}, 1000);
+
+const remembered = savedPassword();
+if (remembered) viewer.connect(remembered);
+render();
+</script>
+</body>
+</html>
