@@ -30,7 +30,9 @@ const CONFIG = {
   heartbeatSeconds: 15,
   // STUN/TURN for the browsers. TURN_SECRET enables coturn's time-limited
   // credentials (use-auth-secret / static-auth-secret).
-  stunUrls: (process.env.STUN_URLS || "stun:stun.l.google.com:19302").split(",").filter(Boolean),
+  // Reachable from mainland China (Google's STUN is not)
+  stunUrls: (process.env.STUN_URLS || "stun:stun.miwifi.com:3478,stun:stun.chat.bilibili.com:3478,stun:stun.cloudflare.com:3478")
+    .split(",").filter(Boolean),
   turnUrls: (process.env.TURN_URLS || "").split(",").filter(Boolean),
   turnSecret: process.env.TURN_SECRET || "",
   turnTtlSeconds: 12 * 3600,
@@ -176,6 +178,7 @@ function detach(ws) {
 
 const screenHub = createScreenHub({
   viewerPassword: CONFIG.screenPassword,
+  iceServers,
   send,
   log,
 });

@@ -5,14 +5,18 @@
 // The agent encodes the screen with the hardware H.264 encoder (scrcpy's
 // approach) and sends the packets here as binary messages; the server passes
 // them to the viewer, which decodes them with WebCodecs. Input goes the other
-// way as JSON.
+// way as JSON. Meanwhile the agent tries a direct path: a WebRTC data channel
+// to the viewer (the server relays its signals). When that opens, the agent
+// sends the packets there instead, from the next keyframe; if it closes, back
+// here.
 //
 // Agent  -> server: info {device}, viewer {data} (ack/stats for the viewer),
-//                   screen_error {error}, ping; binary video packets
-// Server -> agent:  welcome, screen_start {preset}, screen_stop {reason}, input {data}, keyframe
-// Viewer -> server: screen_start {preset}, screen_stop, input {data}, ping
-// Server -> viewer: welcome, screen_presence {agent, device}, screen {state, reason},
-//                   agent {data}, error {error}; binary video packets
+//                   signal {data}, screen_error {error}, ping; binary video packets
+// Server -> agent:  welcome {iceServers}, screen_start {preset}, screen_stop {reason},
+//                   input {data}, keyframe, signal {data}
+// Viewer -> server: screen_start {preset}, screen_stop, input {data}, signal {data}, ping
+// Server -> viewer: welcome {iceServers}, screen_presence {agent, device}, screen {state, reason},
+//                   agent {data}, signal {data}, error {error}; binary video packets
 //
 // A video packet: byte 0 flags (1 = codec config: SPS/PPS, 2 = keyframe),
 // bytes 1-8 the presentation time in microseconds (big endian), then the
@@ -36,7 +40,7 @@ export function secretMatches(secret, given) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export function createScreenHub({ viewerPassword, send, log }) {
+export function createScreenHub({ viewerPassword, iceServers, send, log }) {
   let agent = null;
   let device = null;
   let viewer = null;
@@ -90,7 +94,7 @@ export function createScreenHub({ viewerPassword, send, log }) {
       ws.role = "screen";
       agent = ws;
       device = null;
-      send(ws, { type: "welcome", role: "screen" });
+      send(ws, { type: "welcome", role: "screen", iceServers: iceServers() });
       log(`screen agent connected (${ip})`);
       send(viewer, presence());
     } else {
@@ -106,7 +110,7 @@ export function createScreenHub({ viewerPassword, send, log }) {
       }
       ws.role = "viewer";
       viewer = ws;
-      send(ws, { type: "welcome", role: "viewer" });
+      send(ws, { type: "welcome", role: "viewer", iceServers: iceServers() });
       send(ws, presence());
       send(ws, { type: "screen", state: "idle" });
       log(`viewer signed in (${ip})`);
@@ -122,6 +126,9 @@ export function createScreenHub({ viewerPassword, send, log }) {
           return;
         case "viewer":
           if (state !== "idle") send(viewer, { type: "agent", data: msg.data });
+          return;
+        case "signal":
+          if (state !== "idle") send(viewer, { type: "signal", data: msg.data });
           return;
         case "screen_error":
           log(`screen agent error: ${msg.error}`);
@@ -150,6 +157,9 @@ export function createScreenHub({ viewerPassword, send, log }) {
         return;
       case "input":
         if (state !== "idle") send(agent, { type: "input", data: msg.data });
+        return;
+      case "signal":
+        if (state !== "idle") send(agent, { type: "signal", data: msg.data });
         return;
       case "ping":
         send(ws, { type: "pong" });

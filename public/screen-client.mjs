@@ -5,6 +5,9 @@
 //
 // The agent streams H.264 (hardware encoded on the device); this side decodes
 // it with WebCodecs and draws each frame onto the canvas given to attach().
+// The packets come through the server, or directly over a WebRTC data channel
+// once the agent has one open ("path" event: relay | p2p); while the direct
+// path works, packets still arriving through the server are ignored.
 
 const PACKET_CONFIG = 1;
 const PACKET_KEY = 2;
@@ -46,6 +49,11 @@ export class ScreenViewer extends EventTarget {
     this._codec = null;
     this._config = null;
     this._waitKey = true;
+    // Direct path: the agent's data channel, and the packet being reassembled from it
+    this.iceServers = [];
+    this.pc = null;
+    this.path = "relay";
+    this._fragments = [];
     this._reconnectDelay = 500;
     this._closed = true;
   }
@@ -72,7 +80,11 @@ export class ScreenViewer extends EventTarget {
       this._setConnected(true);
     };
     ws.onmessage = (e) => {
-      if (e.data instanceof ArrayBuffer) return this._onPacket(new Uint8Array(e.data));
+      if (e.data instanceof ArrayBuffer) {
+        // Through the server: ignored while the direct path delivers
+        if (this.path !== "p2p") this._onPacket(new Uint8Array(e.data));
+        return;
+      }
       let msg;
       try { msg = JSON.parse(e.data); } catch { return; }
       this._onMessage(msg);
@@ -152,6 +164,7 @@ export class ScreenViewer extends EventTarget {
     switch (msg.type) {
       case "welcome":
         this.signedIn = true;
+        this.iceServers = msg.iceServers || [];
         this._emit("welcome", msg);
         break;
       case "screen_presence":
@@ -160,7 +173,13 @@ export class ScreenViewer extends EventTarget {
         break;
       case "screen":
         if (msg.state === "idle") this._resetVideo();
+        if (msg.state === "starting") this._startPeer();
         this._setSession(msg);
+        break;
+      case "signal":
+        this._signalChain = (this._signalChain || Promise.resolve())
+          .then(() => this._onSignal(msg.data))
+          .catch(() => this._closePeer());
         break;
       case "agent":
         if (msg.data && typeof msg.data === "object") this._emit("message", msg.data);
@@ -169,6 +188,82 @@ export class ScreenViewer extends EventTarget {
         this._emit("error", msg);
         break;
     }
+  }
+
+  // ---- direct path (WebRTC data channel; the agent offers) ----
+
+  _startPeer() {
+    this._closePeer();
+    const pc = new RTCPeerConnection({ iceServers: this.iceServers });
+    this.pc = pc;
+    this._pendingCandidates = [];
+    pc.onicecandidate = (e) => {
+      if (e.candidate) this._send({ type: "signal", data: { candidate: e.candidate.toJSON() } });
+    };
+    pc.ondatachannel = (e) => {
+      const ch = e.channel;
+      ch.binaryType = "arraybuffer";
+      // Each message is a fragment: byte 0 is 1 on the last one, then a slice of the packet
+      ch.onmessage = (m) => {
+        if (this.pc !== pc) return;
+        const frag = new Uint8Array(m.data);
+        this._fragments.push(frag.subarray(1));
+        if (frag[0] !== 1) return;
+        const size = this._fragments.reduce((n, f) => n + f.length, 0);
+        const packet = new Uint8Array(size);
+        let at = 0;
+        for (const f of this._fragments) { packet.set(f, at); at += f.length; }
+        this._fragments = [];
+        this._setPath("p2p");
+        this._onPacket(packet);
+      };
+      ch.onclose = () => this.pc === pc && this._fallBack();
+    };
+    pc.onconnectionstatechange = () => {
+      if (this.pc === pc && (pc.connectionState === "failed" || pc.connectionState === "closed")) this._fallBack();
+    };
+  }
+
+  async _onSignal(data) {
+    const pc = this.pc;
+    if (!pc || !data) return;
+    if (data.description) {
+      await pc.setRemoteDescription(data.description);
+      for (const c of this._pendingCandidates.splice(0)) await pc.addIceCandidate(c).catch(() => {});
+      if (data.description.type === "offer") {
+        await pc.setLocalDescription(await pc.createAnswer());
+        this._send({ type: "signal", data: { description: pc.localDescription.toJSON() } });
+      }
+    } else if (data.candidate) {
+      if (pc.remoteDescription) await pc.addIceCandidate(data.candidate).catch(() => {});
+      else this._pendingCandidates.push(data.candidate);
+    }
+  }
+
+  // The direct path broke: back to the server's packets, from the next keyframe
+  _fallBack() {
+    if (this.path !== "p2p") return;
+    this._fragments = [];
+    this._waitKey = true;
+    this._setPath("relay");
+    this.sendInput({ t: "keyframe" });
+  }
+
+  _setPath(path) {
+    if (this.path === path) return;
+    this.path = path;
+    this._emit("path", { path });
+  }
+
+  _closePeer() {
+    if (this.pc) {
+      const pc = this.pc;
+      this.pc = null;
+      pc.onicecandidate = pc.ondatachannel = pc.onconnectionstatechange = null;
+      try { pc.close(); } catch {}
+    }
+    this._fragments = [];
+    this._setPath("relay");
   }
 
   // ---- video ----
@@ -257,6 +352,7 @@ export class ScreenViewer extends EventTarget {
   }
 
   _resetVideo() {
+    this._closePeer();
     this._closeDecoder();
     this._config = null;
     this._codec = null;

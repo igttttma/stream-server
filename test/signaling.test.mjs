@@ -295,6 +295,24 @@ test("screen: viewer starts, video packets reach it, input and acks relay, viewe
   await viewer.close();
 });
 
+test("screen: the direct path's signals relay both ways during a session only", async () => {
+  const viewer = new Peer(`role=viewer&password=${PASSWORD}`);
+  assert.ok(Array.isArray((await viewer.next({ type: "welcome" })).iceServers));
+  const agent = new Peer("role=screen");
+  assert.ok(Array.isArray((await agent.next({ type: "welcome" })).iceServers));
+  await viewer.next({ type: "screen_presence", agent: "online" });
+  agent.send({ type: "signal", data: { early: true } }); // no session yet: dropped
+  viewer.send({ type: "screen_start" });
+  await agent.next({ type: "screen_start" });
+  agent.send({ type: "signal", data: { description: { type: "offer", sdp: "x" } } });
+  assert.equal((await viewer.next({ type: "signal" })).data.description.type, "offer");
+  assert.ok(!viewer.messages.some((m) => m.type === "signal" && m.data.early));
+  viewer.send({ type: "signal", data: { candidate: { candidate: "c" } } });
+  assert.equal((await agent.next({ type: "signal" })).data.candidate.candidate, "c");
+  await viewer.close();
+  await agent.close();
+});
+
 test("screen: a viewer that falls behind gets keyframes only, and the agent is asked for one", async () => {
   const { agent, viewer } = await screenPair();
   viewer.send({ type: "screen_start" });

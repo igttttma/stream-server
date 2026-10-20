@@ -83,13 +83,19 @@ scrcpy). The agent is the BlimpMate Remote app
   over its WebSocket; the server passes them to the viewer, which decodes them
   with WebCodecs onto a canvas. Input goes back the same way. A viewer that falls
   behind gets only keyframes until it catches up, and the agent is asked for one.
+- Direct path: meanwhile the agent offers a WebRTC data channel to the viewer
+  (this server relays the signals; STUN from `STUN_URLS`). When it opens, the
+  packets go there from the next keyframe (in fragments: byte 0 is 1 on a
+  packet's last one), and back through the server if it closes. The viewer's
+  stats line shows `direct` or `relay`.
 
 Protocol (details in `screen.mjs`). JSON:
-- Agent → server: `info {device}`, `viewer {data}` (acks, stats), `screen_error {error}`, `ping`
-- Server → agent: `welcome`, `screen_start {preset}`, `screen_stop {reason}`, `input {data}`, `keyframe`
-- Viewer → server: `screen_start {preset}`, `screen_stop`, `input {data}`, `ping`
-- Server → viewer: `welcome`, `screen_presence {agent: offline|online|streaming, device}`,
-  `screen {state: idle|starting|streaming, reason}`, `agent {data}`,
+- Agent → server: `info {device}`, `viewer {data}` (acks, stats), `signal {data}`, `screen_error {error}`, `ping`
+- Server → agent: `welcome {iceServers}`, `screen_start {preset}`, `screen_stop {reason}`, `input {data}`,
+  `keyframe`, `signal {data}`
+- Viewer → server: `screen_start {preset}`, `screen_stop`, `input {data}`, `signal {data}`, `ping`
+- Server → viewer: `welcome {iceServers}`, `screen_presence {agent: offline|online|streaming, device}`,
+  `screen {state: idle|starting|streaming, reason}`, `agent {data}`, `signal {data}`,
   `error {error: unauthorized|locked|busy|screen_disabled|agent_offline}`; the agent can get `agent_connected`
 
 Binary (agent → server → viewer): one video packet per message. Byte 0 is flags

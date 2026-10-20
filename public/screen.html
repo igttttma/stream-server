@@ -471,6 +471,8 @@ setInterval(() => {
     `${Math.round((sample.frames - prev.frames) / seconds)} fps`,
     `${Math.round(((sample.bytes - prev.bytes) * 8) / 1000 / seconds)} kbps`,
     inputMs != null ? `input ${inputMs} ms` : null,
+    // direct (WebRTC data channel) or through the server
+    viewer.path === "p2p" ? "direct" : "relay",
     encoderStats?.encoder ? `H264 (${encoderStats.encoder})` : null,
     encoderStats?.fps != null ? `sent ${Math.round(encoderStats.fps)} fps` : null,
   ];
