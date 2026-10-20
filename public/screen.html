@@ -285,7 +285,15 @@ function send(event) {
   return true;
 }
 
+// The Blimp's encoder, reported every 2 s: codec, encoder (a MediaCodec name is
+// hardware, libvpx/OpenH264 software), and what holds it back (cpu/bandwidth)
+let encoderStats = null;
+
 function onAgentMessage(m) {
+  if (m.t === "stats") {
+    encoderStats = m;
+    return;
+  }
   if (m.t === "ack" && sentAt.has(m.id)) {
     inputMs = Math.round(performance.now() - sentAt.get(m.id));
     sentAt.delete(m.id);
@@ -457,7 +465,7 @@ function clearTrail() {
 let lastStats = null;
 setInterval(async () => {
   const pc = viewer.pc;
-  if (!pc || viewer.session.state === "idle") { $("stats").textContent = ""; lastStats = null; return; }
+  if (!pc || viewer.session.state === "idle") { $("stats").textContent = ""; lastStats = null; encoderStats = null; return; }
   const report = await pc.getStats();
   let video = null, pair = null;
   const byId = new Map();
@@ -479,6 +487,8 @@ setInterval(async () => {
     pair?.currentRoundTripTime != null ? `rtt ${Math.round(pair.currentRoundTripTime * 1000)} ms` : null,
     inputMs != null ? `input ${inputMs} ms` : null,
     route,
+    encoderStats?.codec ? `${encoderStats.codec.replace("video/", "")} (${encoderStats.encoder})` : null,
+    encoderStats?.limit && encoderStats.limit !== "none" ? `limited by ${encoderStats.limit}` : null,
   ];
   $("stats").textContent = parts.filter(Boolean).join(" · ");
 }, 1000);
