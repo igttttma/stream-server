@@ -14,11 +14,24 @@ Media goes peer to peer (or through TURN); the server only relays signaling.
 
 ```
 npm install
-npm run cert            # self-signed; add the VPS IP: npm run cert -- 203.0.113.7
-cp .env.example .env    # set BLIMP_TOKEN
+npm run cert            # certificate for this machine, signed by your CA (made on the first run)
+cp .env.example .env    # set BLIMP_TOKEN and SCREEN_PASSWORD
 npm start
 npm test                # signaling tests + headless Chrome call and screen-control tests
 ```
+
+## Certificates
+
+The BlimpMate apps trust one CA, not one server, so a new server never needs an
+app rebuild. Keep the CA on one machine (your PC):
+
+- The first `npm run cert` creates `certs/ca.pem` (public; the apps bundle it as
+  `BlimpMate_Agent_Clean/src/certs/stream-server-ca.pem`) and `certs/ca-key.pem`
+  (private: never copy it to a server).
+- For a server: `npm run cert -- 203.0.113.7 --out certs/vps`, then copy
+  `certs/vps/cert.pem` and `certs/vps/key.pem` to that server's `certs/` and restart it.
+- Browsers still warn once per server, since they don't know the CA. Import
+  `certs/ca.pem` as a trusted root in the browser or OS to remove the warning.
 
 ## Protocol (JSON over the WebSocket)
 
