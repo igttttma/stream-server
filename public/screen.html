@@ -118,7 +118,7 @@
 
 <section id="view">
   <div id="stage" tabindex="0" aria-label="Blimp screen. Click to tap, drag to swipe, type to enter text.">
-    <video id="screen" autoplay playsinline muted></video>
+    <canvas id="screen"></canvas>
     <canvas id="trail"></canvas>
     <div id="waitMsg">Connecting to the Blimp…</div>
     <div id="stats"></div>
@@ -156,6 +156,7 @@ const $ = (id) => document.getElementById(id);
 const wsUrl = new URL("ws", location.href.replace(/^http/, "ws"));
 wsUrl.search = "";
 const viewer = new ScreenViewer({ url: wsUrl.toString() });
+viewer.attach($("screen"));
 window.screenViewer = viewer; // for debugging and automated tests
 
 const PASSWORD_KEY = "blimpmate.screen_password";
@@ -232,7 +233,7 @@ function render() {
         <button id="watchBtn" ${agent === "online" ? "" : "disabled"}>Watch screen</button>
         <button class="ghost" id="signoutBtn">Sign out</button>
       </div>`;
-    $("watchBtn").onclick = () => viewer.start() || toast("Not connected");
+    $("watchBtn").onclick = () => viewer.start($("quality").value) || toast("Not connected");
     $("signoutBtn").onclick = () => { savePassword(""); viewer.close(); render(); };
   }
 }
@@ -260,17 +261,12 @@ viewer.addEventListener("error", (e) => {
   toast(ERRORS[err] || `Error: ${err}`);
   render();
 });
-viewer.addEventListener("stream", (e) => {
-  const v = $("screen");
-  if (v.srcObject !== e.detail) v.srcObject = e.detail;
-  if (e.detail) v.play().catch(() => {});
-});
-viewer.addEventListener("channel", (e) => {
-  if (e.detail.open) sendQuality();
+// The first frame (and any size change) of the decoded screen
+viewer.addEventListener("video", (e) => {
+  if (e.detail) $("waitMsg").style.display = "none";
+  resizeTrail();
 });
 viewer.addEventListener("message", (e) => onAgentMessage(e.detail));
-$("screen").addEventListener("loadeddata", () => { $("waitMsg").style.display = "none"; });
-$("screen").addEventListener("resize", resizeTrail);
 
 // ---- input ----
 // Positions are fractions (0..1) of the device screen, so the stream size doesn't matter.
@@ -285,8 +281,8 @@ function send(event) {
   return true;
 }
 
-// The Blimp's encoder, reported every 2 s: codec, encoder (a MediaCodec name is
-// hardware, libvpx/OpenH264 software), and what holds it back (cpu/bandwidth)
+// The Blimp's encoder, reported every 2 s: its name (the device's hardware
+// H.264 encoder) and the frames per second it sends
 let encoderStats = null;
 
 function onAgentMessage(m) {
@@ -301,11 +297,10 @@ function onAgentMessage(m) {
   }
 }
 
-// The rectangle the video occupies inside the stage (object-fit: contain)
+// The rectangle the picture occupies inside the stage (object-fit: contain)
 function videoRect() {
-  const v = $("screen");
   const box = $("stage").getBoundingClientRect();
-  const vw = v.videoWidth, vh = v.videoHeight;
+  const vw = viewer.width, vh = viewer.height;
   if (!vw || !vh) return null;
   const scale = Math.min(box.width / vw, box.height / vh);
   const w = vw * scale, h = vh * scale;
@@ -463,36 +458,21 @@ function clearTrail() {
 
 // ---- stats ----
 let lastStats = null;
-setInterval(async () => {
-  const pc = viewer.pc;
-  if (!pc || viewer.session.state === "idle") { $("stats").textContent = ""; lastStats = null; encoderStats = null; return; }
-  const report = await pc.getStats();
-  let video = null, pair = null;
-  const byId = new Map();
-  report.forEach((s) => {
-    byId.set(s.id, s);
-    if (s.type === "inbound-rtp" && s.kind === "video") video = s;
-    if (s.type === "candidate-pair" && s.nominated && s.state === "succeeded") pair = s;
-  });
-  if (!video) return;
+setInterval(() => {
+  if (viewer.session.state === "idle" || !viewer.width) { $("stats").textContent = ""; lastStats = null; encoderStats = null; return; }
   const now = performance.now();
-  const kbps = lastStats ? Math.round(((video.bytesReceived - lastStats.bytes) * 8) / (now - lastStats.at)) : 0;
-  lastStats = { bytes: video.bytesReceived, at: now };
-  const local = pair && byId.get(pair.localCandidateId);
-  const route = local?.candidateType === "relay" ? "relay" : "direct";
+  const sample = { frames: viewer.framesDecoded, bytes: viewer.bytesReceived, at: now };
+  const prev = lastStats;
+  lastStats = sample;
+  if (!prev) return;
+  const seconds = (now - prev.at) / 1000;
   const parts = [
-    `${video.frameWidth || 0}x${video.frameHeight || 0}`,
-    `${Math.round(video.framesPerSecond || 0)} fps`,
-    `${kbps} kbps`,
-    pair?.currentRoundTripTime != null ? `rtt ${Math.round(pair.currentRoundTripTime * 1000)} ms` : null,
+    `${viewer.width}x${viewer.height}`,
+    `${Math.round((sample.frames - prev.frames) / seconds)} fps`,
+    `${Math.round(((sample.bytes - prev.bytes) * 8) / 1000 / seconds)} kbps`,
     inputMs != null ? `input ${inputMs} ms` : null,
-    route,
-    encoderStats?.codec ? `${encoderStats.codec.replace("video/", "")} (${encoderStats.encoder})` : null,
-    // On the Blimp: frames captured from the screen, frames encoded, time per frame
-    encoderStats?.captured != null ? `captured ${Math.round(encoderStats.captured)} fps` : null,
-    encoderStats?.fps != null ? `encoded ${Math.round(encoderStats.fps)} fps` : null,
-    encoderStats?.encode_ms != null ? `encode ${encoderStats.encode_ms} ms` : null,
-    encoderStats?.limit && encoderStats.limit !== "none" ? `limited by ${encoderStats.limit}` : null,
+    encoderStats?.encoder ? `H264 (${encoderStats.encoder})` : null,
+    encoderStats?.fps != null ? `sent ${Math.round(encoderStats.fps)} fps` : null,
   ];
   $("stats").textContent = parts.filter(Boolean).join(" · ");
 }, 1000);

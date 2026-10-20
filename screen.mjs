@@ -1,19 +1,33 @@
 // Remote screen control: one screen agent (the app on the Blimp's Android) and
 // one signed-in viewer that watches and controls it. Whoever connects first
-// holds the slot; another agent or viewer is refused until it leaves. The
-// server only relays signaling; the video and the input (a WebRTC data
-// channel) go peer to peer or through TURN.
+// holds the slot; another agent or viewer is refused until it leaves.
 //
-// Agent  -> server: info {device}, signal {data}, screen_error {error}, ping
-// Server -> agent:  welcome, screen_start, screen_stop {reason}, signal {data}
-// Viewer -> server: screen_start, screen_stop, signal {data}, ping
-// Server -> viewer: welcome, screen_presence {agent, device}, screen {state, reason}, signal {data}, error {error}
+// The agent encodes the screen with the hardware H.264 encoder (scrcpy's
+// approach) and sends the packets here as binary messages; the server passes
+// them to the viewer, which decodes them with WebCodecs. Input goes the other
+// way as JSON.
 //
-// screen.state: idle | starting | streaming. The agent sends the offer.
+// Agent  -> server: info {device}, viewer {data} (ack/stats for the viewer),
+//                   screen_error {error}, ping; binary video packets
+// Server -> agent:  welcome, screen_start {preset}, screen_stop {reason}, input {data}, keyframe
+// Viewer -> server: screen_start {preset}, screen_stop, input {data}, ping
+// Server -> viewer: welcome, screen_presence {agent, device}, screen {state, reason},
+//                   agent {data}, error {error}; binary video packets
+//
+// A video packet: byte 0 flags (1 = codec config: SPS/PPS, 2 = keyframe),
+// bytes 1-8 the presentation time in microseconds (big endian), then the
+// H.264 Annex B data.
+//
+// screen.state: idle | starting | streaming (the first packet arrived).
 import { timingSafeEqual } from "node:crypto";
 
 const LOCKOUT_FAILURES = 5;
 const LOCKOUT_MS = 60_000;
+// More than this waiting to go out to the viewer: drop frames until a
+// keyframe, so the picture stays current instead of falling behind
+const VIEWER_BACKLOG_BYTES = 1024 * 1024;
+export const PACKET_CONFIG = 1;
+export const PACKET_KEY = 2;
 
 export function secretMatches(secret, given) {
   if (!secret) return false;
@@ -22,11 +36,13 @@ export function secretMatches(secret, given) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-export function createScreenHub({ viewerPassword, iceServers, send, log }) {
+export function createScreenHub({ viewerPassword, send, log }) {
   let agent = null;
   let device = null;
   let viewer = null;
   let state = "idle";
+  // Set when frames were dropped: send nothing but config/keyframes until a keyframe
+  let viewerNeedsKey = false;
   // Failed viewer sign-ins per IP, to slow down password guessing
   const failures = new Map();
 
@@ -74,7 +90,7 @@ export function createScreenHub({ viewerPassword, iceServers, send, log }) {
       ws.role = "screen";
       agent = ws;
       device = null;
-      send(ws, { type: "welcome", role: "screen", iceServers: iceServers() });
+      send(ws, { type: "welcome", role: "screen" });
       log(`screen agent connected (${ip})`);
       send(viewer, presence());
     } else {
@@ -90,7 +106,7 @@ export function createScreenHub({ viewerPassword, iceServers, send, log }) {
       }
       ws.role = "viewer";
       viewer = ws;
-      send(ws, { type: "welcome", role: "viewer", iceServers: iceServers() });
+      send(ws, { type: "welcome", role: "viewer" });
       send(ws, presence());
       send(ws, { type: "screen", state: "idle" });
       log(`viewer signed in (${ip})`);
@@ -104,14 +120,8 @@ export function createScreenHub({ viewerPassword, iceServers, send, log }) {
           device = msg.device && typeof msg.device === "object" ? msg.device : null;
           send(viewer, presence());
           return;
-        case "signal":
-          if (state === "idle") return;
-          if (state === "starting") {
-            state = "streaming";
-            send(viewer, { type: "screen", state: "streaming" });
-            send(viewer, presence());
-          }
-          send(viewer, { type: "signal", data: msg.data });
+        case "viewer":
+          if (state !== "idle") send(viewer, { type: "agent", data: msg.data });
           return;
         case "screen_error":
           log(`screen agent error: ${msg.error}`);
@@ -129,21 +139,43 @@ export function createScreenHub({ viewerPassword, iceServers, send, log }) {
         if (!agent) return send(ws, { type: "error", error: "agent_offline" });
         if (state !== "idle") return;
         state = "starting";
+        viewerNeedsKey = false;
         log("viewer started watching");
         send(ws, { type: "screen", state: "starting" });
-        send(agent, { type: "screen_start" });
+        send(agent, { type: "screen_start", preset: typeof msg.preset === "string" ? msg.preset : "medium" });
         send(ws, presence());
         return;
       case "screen_stop":
         endSession("stopped");
         return;
-      case "signal":
-        if (state !== "idle") send(agent, { type: "signal", data: msg.data });
+      case "input":
+        if (state !== "idle") send(agent, { type: "input", data: msg.data });
         return;
       case "ping":
         send(ws, { type: "pong" });
         return;
     }
+  }
+
+  /** A binary message: a video packet from the agent. */
+  function handleBinary(ws, data) {
+    if (ws !== agent || state === "idle" || !viewer || data.length < 9) return;
+    if (state === "starting") {
+      state = "streaming";
+      send(viewer, { type: "screen", state: "streaming" });
+      send(viewer, presence());
+    }
+    const flags = data[0];
+    const essential = (flags & (PACKET_CONFIG | PACKET_KEY)) !== 0;
+    if (!essential && (viewerNeedsKey || viewer.bufferedAmount > VIEWER_BACKLOG_BYTES)) {
+      if (!viewerNeedsKey) {
+        viewerNeedsKey = true;
+        send(agent, { type: "keyframe" });
+      }
+      return;
+    }
+    if (flags & PACKET_KEY) viewerNeedsKey = false;
+    if (viewer.readyState === viewer.OPEN) viewer.send(data, { binary: true });
   }
 
   function detach(ws) {
@@ -164,5 +196,5 @@ export function createScreenHub({ viewerPassword, iceServers, send, log }) {
     return { enabled, agent: presence().agent, viewer: Boolean(viewer) };
   }
 
-  return { enabled, accept, handle, detach, status };
+  return { enabled, accept, handle, handleBinary, detach, status };
 }

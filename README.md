@@ -1,6 +1,6 @@
 # stream-server
 
-Streaming server for BlimpMate. Today: 1:1 WebRTC video calls between one BlimpMate device and one remote browser user.
+Streaming server for BlimpMate: 1:1 WebRTC video calls between one BlimpMate device and one remote browser user, and remote control of the Blimp's Android screen.
 
 - `https://<host>:8443/`: the remote user's page (presence, Call, Accept/Decline, Mute, Camera, Hang up).
 - `wss://<host>:8443/ws?role=remote`: signaling for the browser. The first browser is the remote user; later ones wait in line and are promoted when it leaves.
@@ -8,7 +8,8 @@ Streaming server for BlimpMate. Today: 1:1 WebRTC video calls between one BlimpM
 - `/healthz`: presence and call state as JSON.
 - `?as=blimp&token=…` on the page turns it into a Blimp test console.
 
-Media goes peer to peer (or through TURN); the server only relays signaling.
+Call media goes peer to peer (or through TURN); the server only relays signaling.
+Remote screen control's video goes through the server (see below).
 
 ## Run
 
@@ -77,18 +78,25 @@ scrcpy). The agent is the BlimpMate Remote app
 - `wss://<host>:8443/ws?role=screen`: the agent (no token).
 - `wss://<host>:8443/ws?role=viewer&password=<SCREEN_PASSWORD>`: the viewer. Five wrong
   passwords in a row lock that address out for a minute.
-- The agent sends the offer: one video track (the screen) and an `input` data
-  channel. Input never passes through the server.
+- The agent encodes the screen with the device's hardware H.264 encoder (scrcpy's
+  approach: the screen renders straight into the encoder) and sends the packets
+  over its WebSocket; the server passes them to the viewer, which decodes them
+  with WebCodecs onto a canvas. Input goes back the same way. A viewer that falls
+  behind gets only keyframes until it catches up, and the agent is asked for one.
 
-Protocol (JSON over the WebSocket; details in `screen.mjs`):
-- Agent → server: `info {device}`, `signal {data}`, `screen_error {error}`, `ping`
-- Server → agent: `welcome {iceServers}`, `screen_start`, `screen_stop {reason}`, `signal {data}`
-- Viewer → server: `screen_start`, `screen_stop`, `signal {data}`, `ping`
-- Server → viewer: `welcome {iceServers}`, `screen_presence {agent: offline|online|streaming, device}`,
-  `screen {state: idle|starting|streaming, reason}`, `signal {data}`,
+Protocol (details in `screen.mjs`). JSON:
+- Agent → server: `info {device}`, `viewer {data}` (acks, stats), `screen_error {error}`, `ping`
+- Server → agent: `welcome`, `screen_start {preset}`, `screen_stop {reason}`, `input {data}`, `keyframe`
+- Viewer → server: `screen_start {preset}`, `screen_stop`, `input {data}`, `ping`
+- Server → viewer: `welcome`, `screen_presence {agent: offline|online|streaming, device}`,
+  `screen {state: idle|starting|streaming, reason}`, `agent {data}`,
   `error {error: unauthorized|locked|busy|screen_disabled|agent_offline}`; the agent can get `agent_connected`
 
-Input channel (viewer → agent, each acked with `{t: "ack", id, ok, error?}`):
+Binary (agent → server → viewer): one video packet per message. Byte 0 is flags
+(1 = codec config: SPS/PPS, 2 = keyframe), bytes 1-8 the presentation time in µs
+(big endian), then H.264 Annex B data.
+
+Input (viewer → agent in `input {data}`, each acked with `{t: "ack", id, ok, error?}`):
 `{t: "gesture", points: [[x, y, ms], ...]}` (x, y are fractions of the screen),
 `{t: "key", key: back|home|recents|notifications|enter|backspace|blimp_app}`,
-`{t: "text", text}`, `{t: "quality", preset: low|medium|high}`.
+`{t: "text", text}`, `{t: "quality", preset: low|medium|high}`, `{t: "keyframe"}` (not acked).

@@ -1,7 +1,7 @@
 // Real WebRTC calls between two headless Chrome tabs (fake camera/mic): the
 // remote page and the Blimp test console. Then remote screen control: the
-// /screen page against a fake screen agent in another tab (a canvas as the
-// screen; it records the input it gets). Run: node test/browser-e2e.mjs
+// /screen page against a fake screen agent in another tab (a canvas encoded
+// to H.264 as the screen; it records the input it gets). Run: node test/browser-e2e.mjs
 // CHROME=path overrides the browser.
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -96,38 +96,73 @@ class Tab {
   }
 }
 
-// A screen agent in a page: sends a 1280x720 canvas (a moving bar) and records
-// what arrives on the input channel, acking each event like the Android agent.
+// A screen agent in a page, speaking the Android agent's protocol: a 1280x720
+// canvas (a moving bar) encoded to H.264 Annex B with WebCodecs and sent as
+// binary packets (SPS/PPS as a config packet before each keyframe). It records
+// the presets and input it gets and acks each input like the Android agent.
 const FAKE_AGENT = (url) => `(() => {
   window.agentInputs = [];
   window.agentStops = [];
+  window.agentPresets = [];
   const canvas = Object.assign(document.createElement("canvas"), { width: 1280, height: 720 });
   const g = canvas.getContext("2d");
-  let t = 0;
-  setInterval(() => { g.fillStyle = "#123"; g.fillRect(0, 0, 1280, 720); g.fillStyle = "#fa0"; g.fillRect((t += 8) % 1280, 300, 80, 120); }, 33);
-  const stream = canvas.captureStream(30);
-  // Keep the full size, like the Android agent (MAINTAIN_RESOLUTION)
-  stream.getVideoTracks()[0].contentHint = "detail";
-  let pc = null, ice = [];
+  let t = 0, streaming = false, wantKey = false, ts = 0;
   const ws = new WebSocket(${JSON.stringify(url)});
+  ws.binaryType = "arraybuffer";
   const send = (m) => ws.send(JSON.stringify(m));
-  ws.onmessage = async (e) => {
+  const packet = (flags, bytes, timestamp) => {
+    const p = new Uint8Array(9 + bytes.length);
+    p[0] = flags;
+    new DataView(p.buffer).setBigInt64(1, BigInt(timestamp));
+    p.set(bytes, 9);
+    ws.send(p);
+  };
+  // The SPS (7) and PPS (8) NAL units of an Annex B keyframe
+  const parameterSets = (b) => {
+    const starts = [];
+    for (let i = 0; i + 3 < b.length; i++) if (b[i] === 0 && b[i + 1] === 0 && b[i + 2] === 1) starts.push(i);
+    const out = [];
+    starts.forEach((s, k) => {
+      const type = b[s + 3] & 0x1f;
+      const end = k + 1 < starts.length ? starts[k + 1] - (b[starts[k + 1] - 1] === 0 ? 1 : 0) : b.length;
+      if (type === 7 || type === 8) out.push(0, 0, 0, 1, ...b.subarray(s + 3, end));
+    });
+    return new Uint8Array(out);
+  };
+  const encoder = new VideoEncoder({
+    output: (chunk) => {
+      if (!streaming) return;
+      const bytes = new Uint8Array(chunk.byteLength);
+      chunk.copyTo(bytes);
+      if (chunk.type === "key") {
+        packet(1, parameterSets(bytes), chunk.timestamp);
+        packet(2, bytes, chunk.timestamp);
+      } else {
+        packet(0, bytes, chunk.timestamp);
+      }
+    },
+    error: (e) => { window.agentError = e.message; },
+  });
+  encoder.configure({ codec: "avc1.42001f", width: 1280, height: 720, bitrate: 2000000, framerate: 30,
+    latencyMode: "realtime", avc: { format: "annexb" } });
+  setInterval(() => {
+    g.fillStyle = "#123"; g.fillRect(0, 0, 1280, 720); g.fillStyle = "#fa0"; g.fillRect((t += 8) % 1280, 300, 80, 120);
+    if (!streaming || encoder.encodeQueueSize > 2) return;
+    const frame = new VideoFrame(canvas, { timestamp: (ts += 33333) });
+    encoder.encode(frame, { keyFrame: wantKey });
+    wantKey = false;
+    frame.close();
+  }, 33);
+  ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
-    if (m.type === "welcome") { ice = m.iceServers; send({ type: "info", device: { model: "Fake", android: "13", width: 1280, height: 720, input: true } }); }
-    if (m.type === "screen_stop") { window.agentStops.push(m.reason); pc?.close(); pc = null; }
-    if (m.type === "screen_start") {
-      pc?.close();
-      pc = new RTCPeerConnection({ iceServers: ice });
-      for (const tr of stream.getTracks()) pc.addTransceiver(tr, { direction: "sendonly", streams: [stream] });
-      const ch = pc.createDataChannel("input", { ordered: true });
-      ch.onmessage = (ev) => { const m2 = JSON.parse(ev.data); window.agentInputs.push(m2); ch.send(JSON.stringify({ t: "ack", id: m2.id, ok: true })); };
-      pc.onicecandidate = (ev) => ev.candidate && send({ type: "signal", data: { candidate: ev.candidate.toJSON() } });
-      await pc.setLocalDescription(await pc.createOffer());
-      send({ type: "signal", data: { description: pc.localDescription.toJSON() } });
-    }
-    if (m.type === "signal" && pc) {
-      if (m.data.description) await pc.setRemoteDescription(m.data.description);
-      else if (m.data.candidate) await pc.addIceCandidate(m.data.candidate).catch(() => {});
+    if (m.type === "welcome") send({ type: "info", device: { model: "Fake", android: "13", width: 1280, height: 720, input: true } });
+    if (m.type === "screen_start") { window.agentPresets.push(m.preset); streaming = true; wantKey = true; }
+    if (m.type === "screen_stop") { window.agentStops.push(m.reason); streaming = false; }
+    if (m.type === "keyframe") wantKey = true;
+    if (m.type === "input") {
+      window.agentInputs.push(m.data);
+      if (m.data.t === "keyframe") wantKey = true;
+      else send({ type: "viewer", data: { t: "ack", id: m.data.id, ok: true } });
     }
   };
   return true;
@@ -249,7 +284,8 @@ try {
 
   // ---- remote screen control ----
   for (const t of [blimp, remote]) await t.eval(`window.callClient.close(), true`);
-  const agent = await Tab.open("about:blank");
+  // Any https page of the server (WebCodecs needs a secure context); this one runs no scripts
+  const agent = await Tab.open(`${base}screen-client.mjs`);
   await agent.eval(FAKE_AGENT(`wss://127.0.0.1:${PORT}/ws?role=screen`));
   const viewer = await Tab.open(`${base}screen`);
   await viewer.cmd("Emulation.setDeviceMetricsOverride", { width: 1000, height: 700, deviceScaleFactor: 1, mobile: false });
@@ -265,16 +301,16 @@ try {
   await step("screen: watch shows the agent's screen", async () => {
     await viewer.click("watchBtn");
     await viewer.until(`document.body.classList.contains("streaming")`, "streaming view");
-    await viewer.until(`document.getElementById("screen").videoWidth === 1280`, "video arrives", 15000);
-    await viewer.until(`window.screenViewer.channel?.readyState === "open"`, "input channel open");
-    // The viewer sends its quality preset when the channel opens
-    await agent.until(`window.agentInputs.some((m) => m.t === "quality" && m.preset === "medium")`, "quality preset");
+    // Decoded with WebCodecs onto the canvas
+    await viewer.until(`window.screenViewer.width === 1280 && window.screenViewer.framesDecoded > 5`, "video arrives", 15000);
+    // The quality preset goes with the start request
+    assert.deepEqual(await agent.eval(`window.agentPresets`), ["medium"]);
   });
 
-  // The video's box inside the stage (object-fit: contain), in page pixels
+  // The picture's box inside the stage (object-fit: contain), in page pixels
   const box = async () => JSON.parse(await viewer.eval(`(() => {
-    const st = document.getElementById("stage").getBoundingClientRect(), v = document.getElementById("screen");
-    const s = Math.min(st.width / v.videoWidth, st.height / v.videoHeight), w = v.videoWidth * s, h = v.videoHeight * s;
+    const st = document.getElementById("stage").getBoundingClientRect(), v = window.screenViewer;
+    const s = Math.min(st.width / v.width, st.height / v.height), w = v.width * s, h = v.height * s;
     return JSON.stringify({ x: st.left + (st.width - w) / 2, y: st.top + (st.height - h) / 2, w, h });
   })()`));
   const mouse = (type, x, y, extra = {}) => viewer.cmd("Input.dispatchMouseEvent", { type, x, y, button: "left", clickCount: 1, ...extra });
@@ -329,7 +365,7 @@ try {
     assert.equal(await viewer.eval(`window.screenViewer.session.state`), "streaming");
     await viewer.click("stopBtn");
     await agent.until(`window.agentStops.includes("stopped")`, "agent told to stop");
-    await viewer.until(`!document.body.classList.contains("streaming") && !window.screenViewer.pc`, "viewer idle");
+    await viewer.until(`!document.body.classList.contains("streaming") && window.screenViewer.width === 0`, "viewer idle");
   });
 } finally {
   // Close Chrome through DevTools: killing the process leaves its children running on Windows

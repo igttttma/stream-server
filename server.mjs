@@ -176,7 +176,6 @@ function detach(ws) {
 
 const screenHub = createScreenHub({
   viewerPassword: CONFIG.screenPassword,
-  iceServers,
   send,
   log,
 });
@@ -222,7 +221,8 @@ const server = createServer(
   { cert: readFileSync(CONFIG.certFile), key: readFileSync(CONFIG.keyFile) },
   serveStatic
 );
-const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 256 * 1024 });
+// Large enough for a keyframe of the screen stream
+const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 4 * 1024 * 1024 });
 
 wss.on("connection", (ws, req) => {
   const params = new URL(req.url, "https://localhost").searchParams;
@@ -258,7 +258,11 @@ wss.on("connection", (ws, req) => {
   ws.isAlive = true;
   ws.on("pong", () => { ws.isAlive = true; });
   const screenRole = ws.role === "screen" || ws.role === "viewer";
-  ws.on("message", (raw) => {
+  ws.on("message", (raw, isBinary) => {
+    if (isBinary) {
+      if (screenRole) screenHub.handleBinary(ws, raw);
+      return;
+    }
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
     if (!msg || typeof msg.type !== "string") return;

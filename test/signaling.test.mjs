@@ -26,8 +26,11 @@ class Peer {
   constructor(query) {
     this.messages = [];
     this.waiters = [];
+    // Binary messages (screen video packets)
+    this.packets = [];
     this.ws = new WebSocket(`wss://127.0.0.1:${PORT}/ws?${query}`, { rejectUnauthorized: false });
-    this.ws.on("message", (raw) => {
+    this.ws.on("message", (raw, isBinary) => {
+      if (isBinary) return this.packets.push(Buffer.from(raw));
       const msg = JSON.parse(raw);
       this.messages.push(msg);
       this.waiters = this.waiters.filter((w) => !(w.match(msg) && (w.resolve(msg), true)));
@@ -225,8 +228,7 @@ test("screen: a wrong viewer password is rejected", async () => {
 
 test("screen: a viewer sees the agent come online with its device info", async () => {
   const viewer = new Peer(`role=viewer&password=${PASSWORD}`);
-  const w = await viewer.next({ type: "welcome" });
-  assert.ok(Array.isArray(w.iceServers));
+  await viewer.next({ type: "welcome" });
   assert.equal((await viewer.next({ type: "screen_presence" })).agent, "offline");
   const agent = new Peer("role=screen");
   await viewer.next({ type: "screen_presence", agent: "online" });
@@ -250,25 +252,70 @@ test("screen: the first device holds the slot; another is refused until it leave
   await third.close();
 });
 
-test("screen: viewer starts, agent offers, signals relay both ways, viewer stops", async () => {
+// A video packet as the agent sends it: flags, 8-byte timestamp, H.264 data
+function videoPacket(flags, size = 16) {
+  const p = Buffer.alloc(9 + size, 0xab);
+  p[0] = flags;
+  p.writeBigInt64BE(123456n, 1);
+  return p;
+}
+
+const waitFor = async (cond, label, ms = 3000) => {
+  const end = Date.now() + ms;
+  while (!cond()) {
+    if (Date.now() > end) throw new Error(`timeout: ${label}`);
+    await new Promise((r) => setTimeout(r, 20));
+  }
+};
+
+test("screen: viewer starts, video packets reach it, input and acks relay, viewer stops", async () => {
   const { agent, viewer } = await screenPair();
-  viewer.send({ type: "signal", data: { early: true } }); // no session yet: dropped
-  viewer.send({ type: "screen_start" });
+  viewer.send({ type: "input", data: { t: "key", key: "home", early: true } }); // no session yet: dropped
+  viewer.send({ type: "screen_start", preset: "low" });
   assert.equal((await viewer.next({ type: "screen" })).state, "starting");
-  await agent.next({ type: "screen_start" });
-  agent.send({ type: "signal", data: { description: { type: "offer", sdp: "x" } } });
-  assert.equal((await viewer.next({ type: "signal" })).data.description.type, "offer");
+  assert.equal((await agent.next({ type: "screen_start" })).preset, "low");
+  agent.ws.send(videoPacket(1)); // config (SPS/PPS)
+  agent.ws.send(videoPacket(2)); // keyframe
+  agent.ws.send(videoPacket(0)); // delta
   assert.equal((await viewer.next({ type: "screen" })).state, "streaming");
   await viewer.next({ type: "screen_presence", agent: "streaming" });
-  viewer.send({ type: "signal", data: { description: { type: "answer", sdp: "y" } } });
-  assert.equal((await agent.next({ type: "signal" })).data.description.type, "answer");
-  assert.ok(!agent.messages.some((m) => m.type === "signal" && m.data.early));
+  await waitFor(() => viewer.packets.length === 3, "three packets");
+  assert.deepEqual(viewer.packets.map((p) => p[0]), [1, 2, 0]);
+  assert.equal(viewer.packets[1].readBigInt64BE(1), 123456n);
+  viewer.send({ type: "input", data: { t: "key", key: "back", id: 7 } });
+  assert.equal((await agent.next({ type: "input" })).data.key, "back");
+  assert.ok(!agent.messages.some((m) => m.type === "input" && m.data.early));
+  agent.send({ type: "viewer", data: { t: "ack", id: 7, ok: true } });
+  assert.equal((await viewer.next({ type: "agent" })).data.id, 7);
   viewer.send({ type: "screen_stop" });
   assert.equal((await agent.next({ type: "screen_stop" })).reason, "stopped");
   assert.equal((await viewer.next({ type: "screen", state: "idle" })).reason, "stopped");
   await viewer.next({ type: "screen_presence", agent: "online" });
   await agent.close();
   await viewer.close();
+});
+
+test("screen: a viewer that falls behind gets keyframes only, and the agent is asked for one", async () => {
+  const { agent, viewer } = await screenPair();
+  viewer.send({ type: "screen_start" });
+  await agent.next({ type: "screen_start" });
+  agent.ws.send(videoPacket(2));
+  await viewer.next({ type: "screen", state: "streaming" });
+  // The viewer stops reading: the server's queue to it grows past its limit
+  viewer.ws._socket.pause();
+  for (let i = 0; i < 80 && !agent.messages.some((m) => m.type === "keyframe"); i++) {
+    agent.ws.send(videoPacket(0, 256 * 1024));
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  await agent.next({ type: "keyframe" });
+  const sent = viewer.packets.length;
+  agent.ws.send(videoPacket(0, 64)); // still dropped: waiting for a keyframe
+  agent.ws.send(videoPacket(2, 64)); // the keyframe goes through
+  viewer.ws._socket.resume();
+  await waitFor(() => viewer.packets.at(-1)?.length === 9 + 64 && viewer.packets.at(-1)[0] === 2, "keyframe after the backlog");
+  assert.ok(!viewer.packets.slice(sent).some((p) => p[0] === 0 && p.length === 9 + 64), "the delta was dropped");
+  await viewer.close();
+  await agent.close();
 });
 
 test("screen: a second viewer is refused while one is connected", async () => {
