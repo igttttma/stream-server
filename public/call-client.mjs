@@ -17,11 +17,15 @@ export class CallClient extends EventTarget {
    * @param {string} opts.url  wss://host/ws?role=remote  (or role=blimp&token=…)
    * @param {() => Promise<MediaStream>} [opts.getMedia]  override media capture
    * @param {number} [opts.disconnectGraceMs]  end the call after ICE stays disconnected this long
+   * @param {string} [opts.preferVideoCodec]  e.g. "video/H264": negotiated first when both sides have it
+   * @param {number} [opts.maxVideoBitrate]  cap for the outgoing video, bits/s (browser default otherwise)
    */
-  constructor({ url, getMedia, disconnectGraceMs = 10000 }) {
+  constructor({ url, getMedia, disconnectGraceMs = 10000, preferVideoCodec, maxVideoBitrate }) {
     super();
     this.url = url;
     this.getMedia = getMedia || (() => navigator.mediaDevices.getUserMedia(DEFAULT_MEDIA));
+    this.preferVideoCodec = preferVideoCodec;
+    this.maxVideoBitrate = maxVideoBitrate;
     this.disconnectGraceMs = disconnectGraceMs;
     this.ws = null;
     this.connected = false;
@@ -194,11 +198,40 @@ export class CallClient extends EventTarget {
       const stream = await this.ensureMedia();
       if (this.pc !== pc) return;
       for (const track of stream.getTracks()) pc.addTrack(track, stream);
+      await this._tuneVideo(pc);
     })();
     await this._peerReady;
     if (offerer && this.pc === pc) {
       await pc.setLocalDescription(await pc.createOffer());
       this._send({ type: "signal", data: { description: pc.localDescription.toJSON() } });
+    }
+  }
+
+  /** Codec order and bitrate cap for the outgoing video; best effort (older WebViews lack parts of it). */
+  async _tuneVideo(pc) {
+    const transceiver = pc.getTransceivers().find((t) => t.sender.track?.kind === "video");
+    if (!transceiver) return;
+    const mime = this.preferVideoCodec?.toLowerCase();
+    if (mime && transceiver.setCodecPreferences && RTCRtpReceiver.getCapabilities) {
+      const codecs = RTCRtpReceiver.getCapabilities("video")?.codecs || [];
+      const preferred = codecs.filter((c) => c.mimeType.toLowerCase() === mime);
+      if (preferred.length) {
+        try {
+          transceiver.setCodecPreferences([...preferred, ...codecs.filter((c) => !preferred.includes(c))]);
+        } catch (err) {
+          this._emit("error", { error: `codec: ${err?.message || err}` });
+        }
+      }
+    }
+    if (this.maxVideoBitrate) {
+      try {
+        const params = transceiver.sender.getParameters();
+        if (!params.encodings?.length) params.encodings = [{}];
+        params.encodings[0].maxBitrate = this.maxVideoBitrate;
+        await transceiver.sender.setParameters(params);
+      } catch (err) {
+        this._emit("error", { error: `bitrate: ${err?.message || err}` });
+      }
     }
   }
 
