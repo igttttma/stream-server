@@ -255,7 +255,7 @@ try {
     await blimp.until(`window.callClient.presence.remote === "offline"`, "remote offline");
   });
 
-  await step("phone remote: video is cropped to 16:9 landscape; rotate hint in portrait", async () => {
+  await step("phone remote: video is cropped to 16:9 landscape; the call fills the screen sideways in portrait", async () => {
     await remote.eval(`window.callClient.close(), true`);
     const phone = await Tab.open(base, { phone: true });
     await phone.until(`matchMedia("(pointer: coarse)").matches && !document.getElementById("callBtn")?.disabled`, "phone ready");
@@ -266,7 +266,8 @@ try {
     const sent = await phone.eval(`JSON.stringify(window.callClient.localStream.getVideoTracks()[0].getSettings())`);
     const { width, height } = JSON.parse(sent);
     assert.equal(`${width}x${height}`, "960x540", `phone sends the cropped canvas track (${sent})`);
-    assert.equal(await phone.eval(`getComputedStyle(document.getElementById("rotateHint")).display`), "flex");
+    assert.equal(await phone.eval(`getComputedStyle(document.getElementById("callView")).transform`), "matrix(0, 1, -1, 0, 0, 0)");
+    assert.equal(await phone.eval(`getComputedStyle(document.getElementById("remoteVideo")).objectFit`), "cover");
     await phone.click("hangupBtn");
     await phone.until(`!window.callClient.localStream`, "phone released camera");
     await phone.eval(`window.callClient.close(), true`);
