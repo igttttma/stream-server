@@ -29,8 +29,6 @@ const CONFIG = {
   // Remote screen control: viewers sign in with SCREEN_PASSWORD (unset = off).
   // The agent needs no token: the first device to connect holds the slot.
   screenPassword: process.env.SCREEN_PASSWORD || "",
-  // Camera view pages sign in with CAMERA_PASSWORD (default: SCREEN_PASSWORD; unset = off)
-  cameraPassword: process.env.CAMERA_PASSWORD || process.env.SCREEN_PASSWORD || "",
   heartbeatSeconds: 15,
   // STUN/TURN for the browsers. TURN_SECRET enables coturn's time-limited
   // credentials (use-auth-secret / static-auth-secret).
@@ -232,7 +230,6 @@ const screenHub = createScreenHub({
 });
 
 const cameraHub = createCameraHub({
-  viewerPassword: CONFIG.cameraPassword,
   tokenMatches,
   stopGraceMs: Number(process.env.CAMERA_STOP_GRACE_MS || 8000),
   send,
@@ -276,7 +273,6 @@ if (!existsSync(CONFIG.certFile) || !existsSync(CONFIG.keyFile)) {
   process.exit(1);
 }
 if (!screenHub.enabled) log("Screen control is off (set SCREEN_PASSWORD to turn it on)");
-if (!cameraHub.enabled) log("Camera view is off (set CAMERA_PASSWORD or SCREEN_PASSWORD to turn it on)");
 
 const server = createServer(
   { cert: readFileSync(CONFIG.certFile), key: readFileSync(CONFIG.keyFile) },

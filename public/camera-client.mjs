@@ -1,6 +1,6 @@
 // Page side of the live camera view (protocol in ../camera.mjs). Events:
 // "status" ({connected, reason}), "camera" (the Blimp's camera state),
-// "frame" ({width, height}, every drawn frame), "error" ({error, fatal}).
+// "frame" ({width, height}, every drawn frame), "error" ({error}).
 //
 // The Blimp streams H.264 from its hardware encoder; this side decodes it with
 // WebCodecs and draws each frame onto a canvas, rotated upright. The stream
@@ -95,13 +95,11 @@ export class CameraViewer extends EventTarget {
     this._keyAskedAt = 0;
   }
 
-  connect(password) {
-    this.password = password;
+  connect() {
     this._closed = false;
     clearTimeout(this._retryTimer);
     const url = new URL(this.url);
     url.searchParams.set("role", "camera_viewer");
-    url.searchParams.set("password", password);
     if (!this.watching) url.searchParams.set("watch", "0");
     const ws = new WebSocket(url);
     ws.binaryType = "arraybuffer";
@@ -134,15 +132,9 @@ export class CameraViewer extends EventTarget {
       if (this.ws !== ws) return;
       this.ws = null;
       this._resetDecoder();
-      // Wrong password, locked out, or the feature is off: retrying won't help
-      const fatal = e.code === 4001 || e.code === 4029 || e.code === 4003;
-      if (fatal) {
-        this._closed = true;
-        this._emit("error", { error: e.code === 4001 ? "unauthorized" : e.code === 4029 ? "locked" : "disabled", fatal: true });
-      }
       this._setConnected(false, e.reason || `closed (${e.code})`);
       if (!this._closed) {
-        this._retryTimer = setTimeout(() => !this._closed && this.connect(this.password), this._retryMs);
+        this._retryTimer = setTimeout(() => !this._closed && this.connect(), this._retryMs);
         this._retryMs = Math.min(this._retryMs * 2, 5_000);
       }
     };
@@ -176,7 +168,7 @@ export class CameraViewer extends EventTarget {
       this._resetDecoder();
       this._setConnected(false, "reconnecting");
     }
-    this.connect(this.password);
+    this.connect();
   }
 
   /** Watching or not (a hidden page stops, so the Blimp's camera can rest). */
@@ -216,7 +208,7 @@ export class CameraViewer extends EventTarget {
       if (camera.state === "streaming" && !this.lastFrameAt) this.lastFrameAt = performance.now();
       this._emit("camera", camera);
     } else if (msg.type === "error") {
-      this._emit("error", { error: msg.error, fatal: false });
+      this._emit("error", { error: msg.error });
     }
   }
 
@@ -310,7 +302,7 @@ export class CameraViewer extends EventTarget {
       this._decoderKey = key;
       return true;
     } catch (err) {
-      this._emit("error", { error: `This browser can't play the stream (${codec}): ${err.message}`, fatal: false });
+      this._emit("error", { error: `This browser can't play the stream (${codec}): ${err.message}` });
       return false;
     }
   }
@@ -344,7 +336,7 @@ export class CameraViewer extends EventTarget {
   }
 
   _decodeFailed(err) {
-    this._emit("error", { error: `decode: ${err?.message || err}`, fatal: false });
+    this._emit("error", { error: `decode: ${err?.message || err}` });
     this._closeDecoder();
     this._askKeyframe();
   }

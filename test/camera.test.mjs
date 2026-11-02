@@ -8,12 +8,10 @@ import WebSocket from "ws";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const PORT = 18444;
-const PASSWORD = "camera-pass";
 
 const server = spawn(process.execPath, ["server.mjs"], {
   cwd: ROOT,
-  env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", CAMERA_PASSWORD: PASSWORD,
-    CAMERA_STOP_GRACE_MS: "600" },
+  env: { ...process.env, PORT: String(PORT), HOST: "127.0.0.1", CAMERA_STOP_GRACE_MS: "600" },
   stdio: ["ignore", "pipe", "inherit"],
 });
 await new Promise((resolve, reject) => {
@@ -38,7 +36,7 @@ const packet = (flags, size) => {
   b[0] = flags;
   return b;
 };
-const page = () => open(`role=camera_viewer&password=${PASSWORD}`);
+const page = () => open("role=camera_viewer");
 const last = (ws) => ws.messages.filter((m) => m.type === "camera").at(-1);
 const count = (ws, type) => ws.messages.filter((m) => m.type === type).length;
 let failed = 0;
@@ -52,9 +50,7 @@ async function test(name, fn) {
   }
 }
 
-await test("a page needs the password", async () => {
-  const bad = new WebSocket(`wss://127.0.0.1:${PORT}/ws?role=camera_viewer&password=nope`, { rejectUnauthorized: false });
-  assert.equal(await new Promise((r) => bad.on("close", r)), 4001);
+await test("the Blimp side needs the token (pages need nothing)", async () => {
   const fake = new WebSocket(`wss://127.0.0.1:${PORT}/ws?role=camera&token=nope`, { rejectUnauthorized: false });
   assert.equal(await new Promise((r) => fake.on("close", r)), 4001);
 });

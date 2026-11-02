@@ -109,18 +109,18 @@ Input (viewer → agent in `input {data}`, each acked with `{t: "ack", id, ok, e
 ## Live camera view
 
 `https://<host>:8443/camera`: what the Blimp's camera sees, live. Any number of
-pages can watch. The page plays as soon as it opens, reconnects by itself, keeps
-the phone awake, and shows why the picture is paused. The streamer is native code
+pages can watch. The page plays as soon as it opens and fills the screen in
+landscape (an upright phone shows it sideways; "Fit" shows the whole picture),
+reconnects by itself, keeps the phone awake, and shows why the picture is paused. The streamer is native code
 in the Blimp app (`CameraView.java`), using the same stream server address as calls.
 
-- Pages sign in with `CAMERA_PASSWORD` (default: `SCREEN_PASSWORD`; neither = off).
-  The browser remembers it; a link can carry it: `/camera#pw=<password>`.
+- No password: anyone with the link can watch.
 - The Blimp opens the camera only while someone watches; it closes 8 s after the
   last page leaves or is hidden.
 - Lowest priority: the AI's photo tool and video calls take the camera, and the
   view pauses (`paused` with reason `photo` / `call`) until they are done.
-- 4:3 up to 1440x1080, 30 fps, hardware H.264 (Camera2 renders into the encoder),
-  0.35-4 Mbps following the connection: the Blimp cuts the bitrate when data piles up
+- 16:9 up to 1920x1080, 30 fps, hardware H.264 (Camera2 renders into the encoder),
+  0.35-5 Mbps following the connection: the Blimp cuts the bitrate when data piles up
   on its uplink or a page falls behind, and raises it again after clear seconds.
 - A page further behind than about a second of video (from its `ack`s) gets only
   keyframes until it catches up; a page stuck for 10 s no longer lowers the bitrate
@@ -130,5 +130,5 @@ Protocol (details in `camera.mjs`), binary packets as for the screen:
 - Blimp: `wss://<host>:8443/ws?role=camera&token=blimpmate`; sends `info`, `camera_state
   {state: idle|starting|streaming|paused|error, reason, width, height, rotation, kbps}`;
   gets `camera_start`, `camera_stop`, `keyframe`, `congestion`
-- Page: `wss://<host>:8443/ws?role=camera_viewer&password=…`; sends `watch {on}`,
+- Page: `wss://<host>:8443/ws?role=camera_viewer`; sends `watch {on}`,
   `ack {bytes}`, `keyframe`; gets `camera {agent: online|offline, state, …}`

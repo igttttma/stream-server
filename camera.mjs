@@ -1,5 +1,6 @@
-// Live camera view: the Blimp app streams its camera and any number of
-// signed-in pages (/camera) watch it.
+// Live camera view: the Blimp app streams its camera and any number of pages
+// (/camera) watch it. Pages need no password (the owner's choice: the demo's
+// viewers just open the link).
 //
 // The Blimp app (role=camera, Blimp token) opens the camera only while
 // someone watches: the first watcher sends it camera_start, and the last one
@@ -24,10 +25,8 @@
 //                   error {error}; binary video packets
 //
 // camera_state.state: idle | starting | streaming | paused | error
-import { secretMatches, PACKET_CONFIG, PACKET_KEY } from "./screen.mjs";
+import { PACKET_CONFIG, PACKET_KEY } from "./screen.mjs";
 
-const LOCKOUT_FAILURES = 5;
-const LOCKOUT_MS = 60_000;
 // The camera keeps running this long after the last page stops watching
 const STOP_GRACE_MS = 8_000;
 // A page further behind than about a second of video (at the measured rate,
@@ -43,7 +42,7 @@ const CONGESTION_NOTICE_MS = 1_000;
 // slow: it stops pulling everyone's bitrate down
 const STUCK_MS = 10_000;
 
-export function createCameraHub({ viewerPassword, tokenMatches, send, log, stopGraceMs = STOP_GRACE_MS }) {
+export function createCameraHub({ tokenMatches, send, log, stopGraceMs = STOP_GRACE_MS }) {
   let agent = null;
   let device = null;
   // The camera's last reported state (camera_state minus the type)
@@ -58,9 +57,6 @@ export function createCameraHub({ viewerPassword, tokenMatches, send, log, stopG
   let rateSince = Date.now();
   let lastKeySize = 0;
   const viewers = new Set();
-  const failures = new Map();
-
-  const enabled = Boolean(viewerPassword);
   const watching = () => [...viewers].filter((v) => v.watching);
 
   function view() {
@@ -121,23 +117,12 @@ export function createCameraHub({ viewerPassword, tokenMatches, send, log, stopG
     update();
   }
 
-  function locked(ip) {
-    const f = failures.get(ip);
-    return f && f.count >= LOCKOUT_FAILURES && Date.now() - f.last < LOCKOUT_MS;
-  }
-
-  function noteFailure(ip) {
-    const f = failures.get(ip);
-    if (!f || Date.now() - f.last >= LOCKOUT_MS) failures.set(ip, { count: 1, last: Date.now() });
-    else Object.assign(f, { count: f.count + 1, last: Date.now() });
-  }
-
   function refuse(ws, error, code, reason) {
     send(ws, { type: "error", error });
     ws.close(code, reason);
   }
 
-  /** A new /ws connection with role camera (the Blimp) or camera_viewer (a page). */
+  /** A new /ws connection with role camera (the Blimp, with its token) or camera_viewer (a page). */
   function accept(role, ws, params, ip) {
     if (role === "camera") {
       if (!tokenMatches(params.get("token"))) return refuse(ws, "unauthorized", 4001, "unauthorized");
@@ -159,13 +144,6 @@ export function createCameraHub({ viewerPassword, tokenMatches, send, log, stopG
       update();
       return;
     }
-    if (!enabled) return refuse(ws, "camera_disabled", 4003, "camera view is not configured");
-    if (locked(ip)) return refuse(ws, "locked", 4029, "too many attempts");
-    if (!secretMatches(viewerPassword, params.get("password"))) {
-      noteFailure(ip);
-      return refuse(ws, "unauthorized", 4001, "unauthorized");
-    }
-    failures.delete(ip);
     ws.role = "camera_viewer";
     ws.watching = false;
     ws.sentBytes = 0;
@@ -288,9 +266,9 @@ export function createCameraHub({ viewerPassword, tokenMatches, send, log, stopG
   }
 
   function status() {
-    return { enabled, agent: agent ? "online" : "offline", state: camera.state, viewers: viewers.size,
+    return { agent: agent ? "online" : "offline", state: camera.state, viewers: viewers.size,
       watching: watching().length };
   }
 
-  return { enabled, accept, handle, handleBinary, detach, status };
+  return { accept, handle, handleBinary, detach, status };
 }

@@ -30,7 +30,7 @@
   /* Phones held upright: the view turns sideways, so it is watched in landscape
      (iPhone browsers can't lock the orientation) */
   @media (orientation: portrait) and (pointer: coarse) {
-    body:not(.signin) #stage {
+    #stage {
       inset: auto; top: 0; left: 100vw; width: 100vh; width: 100dvh; height: 100vw;
       transform-origin: top left; transform: rotate(90deg);
     }
@@ -91,24 +91,6 @@
   @keyframes spin { to { transform: rotate(360deg); } }
   @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
 
-  /* sign in */
-  #signin {
-    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 4;
-    background: #0f1115;
-  }
-  #signin[hidden] { display: none; }
-  #signin form { width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 12px; text-align: center; }
-  #signin h2 { margin: 0; font-size: 22px; font-weight: 600; }
-  #signin p { margin: 0 0 6px; color: var(--muted); }
-  #signin input {
-    font: inherit; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border);
-    background: var(--field); color: var(--text);
-  }
-  #signin button {
-    font: inherit; font-weight: 600; border: 0; border-radius: 999px; padding: 12px 26px; cursor: pointer;
-    background: var(--accent); color: #fff;
-  }
-  #signinError { color: #ff8080; min-height: 1.4em; font-size: 14px; }
 </style>
 </head>
 <body class="dim">
@@ -137,30 +119,14 @@
   </div>
 
   <div id="stats" hidden></div>
-
-  <div id="signin" hidden>
-    <form id="signinForm" autocomplete="on">
-      <h2>Blimp camera</h2>
-      <p>Enter the viewing password. This browser remembers it.</p>
-      <input type="password" id="password" autocomplete="current-password" placeholder="Password" required>
-      <button type="submit">Watch</button>
-      <div id="signinError" role="alert"></div>
-    </form>
-  </div>
 </div>
 
 <script type="module">
 import { CameraViewer } from "./camera-client.mjs";
 
 const $ = (id) => document.getElementById(id);
-const STORE = "blimp.camera.password";
-const store = {
-  get() { try { return localStorage.getItem(STORE) || ""; } catch { return ""; } },
-  set(v) { try { v ? localStorage.setItem(STORE, v) : localStorage.removeItem(STORE); } catch {} },
-};
 
 if (!("VideoDecoder" in window)) {
-  $("signin").hidden = true;
   show({ title: "This browser can't play the camera", text: "Open this page in a current Chrome, Edge, Safari (iOS 16.4+) or Firefox.", spin: false });
   throw new Error("WebCodecs missing");
 }
@@ -169,37 +135,6 @@ const wsUrl = new URL("ws", location.href);
 wsUrl.protocol = location.protocol === "https:" ? "wss:" : "ws:";
 const viewer = new CameraViewer({ url: wsUrl.toString(), canvas: $("video") });
 window.cameraViewer = viewer; // for debugging from the console
-
-// A shared link may carry the password: #pw=...
-const fromLink = new URLSearchParams(location.hash.slice(1)).get("pw");
-if (fromLink) {
-  store.set(fromLink);
-  history.replaceState(null, "", location.pathname + location.search);
-}
-
-function signIn(password) {
-  $("signin").hidden = true;
-  document.body.classList.remove("signin");
-  viewer.watching = !document.hidden;
-  viewer.connect(password);
-  render();
-}
-
-function askPassword(error = "") {
-  $("signin").hidden = false;
-  document.body.classList.add("signin");
-  $("signinError").textContent = error;
-  $("password").value = "";
-  setTimeout(() => $("password").focus(), 0);
-}
-
-$("signinForm").onsubmit = (e) => {
-  e.preventDefault();
-  const pw = $("password").value;
-  if (!pw) return;
-  store.set(pw);
-  signIn(pw);
-};
 
 // ---- what the page says ----
 
@@ -268,22 +203,8 @@ viewer.addEventListener("frame", () => {
   }
 });
 viewer.addEventListener("error", (e) => {
-  const { error, fatal } = e.detail;
-  if (!fatal) {
-    console.warn("camera:", error);
-    return;
-  }
-  if (error === "unauthorized") {
-    const tried = Boolean(store.get());
-    store.set("");
-    askPassword(tried ? "Wrong password." : "");
-  } else if (error === "locked") {
-    askPassword("Too many wrong passwords. Wait a minute, then try again.");
-  } else {
-    $("signin").hidden = true;
-    show({ title: "The camera view is turned off on this server", text: "Set CAMERA_PASSWORD (or SCREEN_PASSWORD) for the stream server.", spin: false });
-    badge("off", "Off");
-  }
+  const { error } = e.detail;
+  console.warn("camera:", error);
 });
 
 // ---- stats ----
@@ -385,9 +306,9 @@ holdScreen();
 
 // ---- start ----
 
-const saved = store.get();
-if (saved) signIn(saved);
-else askPassword();
+viewer.watching = !document.hidden;
+viewer.connect();
+render();
 </script>
 </body>
 </html>
