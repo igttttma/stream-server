@@ -266,7 +266,6 @@ const card = (title, sub, actions = "") =>
   `<div class="avatar">${ICON.person}</div><h2>${title}</h2><p>${sub}</p>${actions && `<div class="actions">${actions}</div>`}`;
 $("hangupBtn").innerHTML = ICON.hang;
 
-let waiting = false;
 const REASONS = {
   declined: `${peerName} declined the call`,
   cancelled: `${peerName} cancelled the call`,
@@ -274,6 +273,7 @@ const REASONS = {
   hangup: "Call ended",
   peer_left: `${peerName} went offline`,
   connection_lost: "Connection lost",
+  answered_elsewhere: "Answered on another page",
 };
 
 function toast(text) {
@@ -289,7 +289,6 @@ function render() {
   const pill = $("presence");
   pill.dataset.s = peerStatus;
   $("presenceText").textContent = !client.connected ? "Connecting…"
-    : waiting ? "Someone else is using this page"
     : `${peerName} ${peerStatus === "in_call" ? "in a call" : peerStatus}`;
 
   const { state, direction } = client.call;
@@ -297,10 +296,7 @@ function render() {
   const panel = $("panel");
   panel.className = "panel";
 
-  if (waiting) {
-    panel.classList.add("no-actions");
-    panel.innerHTML = card("Line busy", "Another person is already connected. You'll be connected when they leave.");
-  } else if (state === "ringing" && direction === "incoming") {
+  if (state === "ringing" && direction === "incoming") {
     panel.innerHTML = card(peerName, "Incoming video call",
       action("declineBtn", "red", ICON.hang, "Decline") + action("acceptBtn", "green", ICON.video, "Accept"));
     $("acceptBtn").onclick = async () => {
@@ -332,10 +328,8 @@ function render() {
 
 client.addEventListener("status", render);
 client.addEventListener("presence", render);
-client.addEventListener("waiting", () => { waiting = true; render(); });
-client.addEventListener("welcome", () => { waiting = false; render(); });
+client.addEventListener("welcome", render);
 client.addEventListener("call", (e) => {
-  waiting = false;
   if (e.detail.state === "idle") leaveLandscape();
   if (e.detail.state === "idle" && e.detail.reason) toast(REASONS[e.detail.reason] || `Call ended (${e.detail.reason})`);
   if (e.detail.state === "in_call") {
@@ -349,7 +343,7 @@ client.addEventListener("error", (e) => {
   const err = e.detail.error;
   client.releaseMedia();
   if (client.call.state === "idle") leaveLandscape();
-  toast(err === "peer_offline" ? `${peerName} is offline` : err === "busy" ? "Line busy"
+  toast(err === "peer_offline" ? `${peerName} is offline` : err === "busy" ? `Line busy: ${peerName} is in another call`
     : err === "replaced" ? "Signed in somewhere else" : `Error: ${err}`);
 });
 client.addEventListener("connection", (e) => {

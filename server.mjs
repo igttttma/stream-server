@@ -1,5 +1,5 @@
 // Stream server for BlimpMate:
-// - 1:1 video calls between one Blimp and one remote browser user (/).
+// - 1:1 video calls between one Blimp and remote browser users (/).
 // - Remote screen control of the Blimp's Android (/screen; see screen.mjs).
 // HTTPS serves the pages; WSS /ws carries presence, call/session control and
 // WebRTC signaling. Media flows peer to peer (or through TURN), never here.
@@ -61,118 +61,162 @@ function tokenMatches(given) {
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
-// ---- state: one blimp, one remote user (later browsers wait in line), one call ----
+// ---- state: one blimp, any number of remote pages, one call ----
+// Every browser that opens the page is connected and sees the Blimp's status.
+// Only one call runs at a time: pressing Call while one is ringing or in
+// progress gets "busy". When the Blimp calls out, every open page rings and
+// the first to answer gets the call.
 
-const peers = { blimp: null, remote: null };
-const waitingRemotes = [];
-// call.state: idle | ringing | in_call; caller/callee are "blimp" | "remote"
-const call = { state: "idle", caller: null, callee: null, ringTimer: null };
-
-const other = (role) => (role === "blimp" ? "remote" : "blimp");
+let blimp = null;
+const remotes = new Set();
+// call.state: idle | ringing | in_call; caller: "blimp" | "remote".
+// call.remote: the remote page in the call (null while the Blimp rings every page);
+// call.declined: pages that declined the Blimp's ring-to-all
+const call = { state: "idle", caller: null, remote: null, declined: new Set(), ringTimer: null };
 
 function send(ws, msg) {
   if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(msg));
 }
 
-function presence() {
-  const inCall = call.state === "in_call";
-  return {
-    type: "presence",
-    blimp: peers.blimp ? (inCall ? "in_call" : "online") : "offline",
-    remote: peers.remote ? (inCall ? "in_call" : "online") : "offline",
-  };
+const connected = () => [blimp, ...remotes].filter(Boolean);
+
+// Whether this connection takes part in the current call (ringing counts)
+function inCall(ws) {
+  if (call.state === "idle") return false;
+  if (ws.role === "blimp") return ws === blimp;
+  if (call.remote) return ws === call.remote;
+  return call.caller === "blimp" && remotes.has(ws) && !call.declined.has(ws);
+}
+const parties = () => connected().filter(inCall);
+const ringingRemotes = () => parties().filter((ws) => ws.role === "remote");
+
+// The Blimp sees whether any remote page is open. A remote page sees the Blimp
+// as available unless it is the one in the call: other pages learn the line is
+// busy only when they press Call.
+function presenceFor(ws) {
+  const busy = call.state === "in_call";
+  if (ws.role === "blimp") {
+    return { type: "presence", blimp: busy ? "in_call" : "online",
+      remote: !remotes.size ? "offline" : busy ? "in_call" : "online" };
+  }
+  const mine = busy && ws === call.remote;
+  return { type: "presence", blimp: !blimp ? "offline" : mine ? "in_call" : "online",
+    remote: mine ? "in_call" : "online" };
 }
 
 function broadcastPresence() {
-  const msg = presence();
-  send(peers.blimp, msg);
-  send(peers.remote, msg);
+  for (const ws of connected()) send(ws, presenceFor(ws));
 }
 
 // Each side gets its own view of the call: its direction, and on connect who sends the offer
-function sendCallState(reason, roles = ["blimp", "remote"]) {
-  for (const role of roles) {
-    const view = { type: "call", state: call.state };
-    if (call.state !== "idle") {
-      view.direction = call.caller === role ? "outgoing" : "incoming";
-      if (call.state === "in_call") view.offerer = call.caller === role;
-    }
-    if (reason) view.reason = reason;
-    send(peers[role], view);
+function callView(ws, reason) {
+  const view = { type: "call", state: inCall(ws) ? call.state : "idle" };
+  if (view.state !== "idle") {
+    const outgoing = call.caller === ws.role;
+    view.direction = outgoing ? "outgoing" : "incoming";
+    if (view.state === "in_call") view.offerer = outgoing;
   }
+  if (reason) view.reason = reason;
+  return view;
+}
+
+function sendCallState(targets = parties()) {
+  for (const ws of targets) send(ws, callView(ws));
 }
 
 function endCall(reason) {
   if (call.state === "idle") return;
+  const was = parties();
   clearTimeout(call.ringTimer);
   log(`call ended: ${reason}`);
-  Object.assign(call, { state: "idle", caller: null, callee: null, ringTimer: null });
-  sendCallState(reason);
+  Object.assign(call, { state: "idle", caller: null, remote: null, declined: new Set(), ringTimer: null });
+  for (const ws of was) send(ws, callView(ws, reason));
   broadcastPresence();
 }
 
-function handleControl(role, msg) {
+// The Blimp's ring-to-all ends once no page is left ringing
+function checkRingToAll() {
+  if (call.state === "ringing" && call.caller === "blimp" && !ringingRemotes().length) {
+    endCall(call.declined.size ? "declined" : "peer_left");
+  }
+}
+
+function handleControl(ws, msg) {
+  const role = ws.role;
   switch (msg.type) {
     case "invite": {
-      if (!peers[other(role)]) return send(peers[role], { type: "error", error: "peer_offline" });
-      if (call.state === "ringing" && call.callee === role) {
+      if (role === "remote" ? !blimp : !remotes.size) return send(ws, { type: "error", error: "peer_offline" });
+      if (call.state === "ringing" && call.caller !== role && inCall(ws)) {
         // Both called each other at once: treat it as an answer
-        return handleControl(role, { type: "accept" });
+        return handleControl(ws, { type: "accept" });
       }
-      if (call.state !== "idle") return send(peers[role], { type: "error", error: "busy" });
-      Object.assign(call, { state: "ringing", caller: role, callee: other(role) });
+      if (call.state !== "idle") return send(ws, { type: "error", error: "busy" });
+      Object.assign(call, { state: "ringing", caller: role, remote: role === "remote" ? ws : null, declined: new Set() });
       call.ringTimer = setTimeout(() => endCall("no_answer"), CONFIG.ringSeconds * 1000);
-      log(`${role} is calling`);
+      log(`${role} is calling${role === "blimp" ? ` (${remotes.size} page(s) ring)` : ""}`);
       sendCallState();
       return;
     }
     case "accept": {
-      if (call.state !== "ringing" || call.callee !== role) return;
+      if (call.state !== "ringing" || call.caller === role || !inCall(ws)) return;
       clearTimeout(call.ringTimer);
+      const others = role === "remote" ? ringingRemotes().filter((r) => r !== ws) : [];
       call.state = "in_call";
+      if (role === "remote") call.remote = ws;
       log(`${role} answered`);
+      for (const r of others) send(r, callView(r, "answered_elsewhere"));
       sendCallState();
       broadcastPresence();
       return;
     }
     case "decline":
-      if (call.state === "ringing" && call.callee === role) endCall("declined");
+      if (call.state !== "ringing" || call.caller === role || !inCall(ws)) return;
+      if (role === "remote" && call.caller === "blimp" && ringingRemotes().length > 1) {
+        // Other pages keep ringing
+        call.declined.add(ws);
+        send(ws, callView(ws));
+        return;
+      }
+      endCall("declined");
       return;
     case "hangup":
+      if (!inCall(ws)) return;
       if (call.state === "ringing" && call.caller === role) endCall("cancelled");
       else if (call.state === "in_call") endCall("hangup");
       return;
     case "signal":
       // SDP/ICE only flows within an answered call
-      if (call.state === "in_call") send(peers[other(role)], { type: "signal", data: msg.data });
+      if (call.state === "in_call" && inCall(ws)) {
+        send(role === "blimp" ? call.remote : blimp, { type: "signal", data: msg.data });
+      }
       return;
     case "ping":
-      send(peers[role], { type: "pong" });
+      send(ws, { type: "pong" });
       return;
   }
 }
 
 function attach(role, ws) {
   ws.role = role;
-  peers[role] = ws;
+  if (role === "blimp") blimp = ws;
+  else remotes.add(ws);
   send(ws, { type: "welcome", role, iceServers: iceServers(), ringSeconds: CONFIG.ringSeconds });
-  log(`${role} connected`);
+  log(`${role} connected${role === "remote" ? ` (${remotes.size} page(s) open)` : ""}`);
   broadcastPresence();
-  sendCallState(undefined, [role]);
+  // A page opened while the Blimp is ringing out rings too
+  send(ws, callView(ws));
 }
 
 function detach(ws) {
-  const idx = waitingRemotes.indexOf(ws);
-  if (idx >= 0) waitingRemotes.splice(idx, 1);
-  if (peers[ws.role] !== ws) return;
-  peers[ws.role] = null;
-  log(`${ws.role} disconnected`);
-  if (call.state !== "idle") endCall("peer_left");
-  // The first browser in line becomes the remote user
-  if (ws.role === "remote") {
-    const next = waitingRemotes.shift();
-    if (next) attach("remote", next);
+  if (ws.role === "blimp") {
+    if (blimp !== ws) return;
+    blimp = null;
+  } else if (!remotes.delete(ws)) {
+    return;
   }
+  log(`${ws.role} disconnected`);
+  if (ws.role === "blimp" || call.remote === ws) endCall("peer_left");
+  else checkRingToAll();
   broadcastPresence();
 }
 
@@ -191,7 +235,8 @@ async function serveStatic(req, res) {
   const url = new URL(req.url, "https://localhost");
   if (url.pathname === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
-    return res.end(JSON.stringify({ ok: true, ...presence(), call: call.state, screen: screenHub.status() }));
+    return res.end(JSON.stringify({ ok: true, blimp: blimp ? "online" : "offline", remotes: remotes.size,
+      call: call.state, screen: screenHub.status() }));
   }
   // /screen/ -> /screen: the pages use relative links, which break under a trailing slash
   if (url.pathname.length > 1 && url.pathname.endsWith("/")) {
@@ -236,21 +281,14 @@ wss.on("connection", (ws, req) => {
       return ws.close(4001, "unauthorized");
     }
     // A reconnecting blimp replaces its stale connection
-    if (peers.blimp) {
-      const stale = peers.blimp;
+    if (blimp) {
+      const stale = blimp;
       detach(stale);
       stale.close(4002, "replaced");
     }
     attach("blimp", ws);
   } else if (role === "remote") {
-    ws.role = "remote";
-    if (peers.remote) {
-      waitingRemotes.push(ws);
-      send(ws, { type: "waiting", position: waitingRemotes.length });
-      log(`remote browser waiting (${waitingRemotes.length} in line)`);
-    } else {
-      attach("remote", ws);
-    }
+    attach("remote", ws);
   } else if (role === "screen" || role === "viewer") {
     screenHub.accept(role, ws, params, req.socket.remoteAddress);
     if (ws.readyState !== ws.OPEN) return;
@@ -270,8 +308,8 @@ wss.on("connection", (ws, req) => {
     try { msg = JSON.parse(raw); } catch { return; }
     if (!msg || typeof msg.type !== "string") return;
     if (screenRole) return screenHub.handle(ws, msg);
-    if (peers[ws.role] !== ws) return; // waiting browsers can't act
-    handleControl(ws.role, msg);
+    if (ws !== blimp && !remotes.has(ws)) return; // replaced connections can't act
+    handleControl(ws, msg);
   });
   ws.on("close", () => (screenRole ? screenHub.detach(ws) : detach(ws)));
 });

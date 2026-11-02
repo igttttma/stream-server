@@ -273,13 +273,20 @@ try {
     await blimp.until(`window.callClient.presence.remote === "offline"`, "phone gone");
   });
 
-  await step("a second browser waits while the first is connected", async () => {
+  await step("a second page sees the Blimp available; Line busy only when it calls during a call", async () => {
     await remote.eval(`window.callClient.connect(), true`);
     await remote.until(`window.callClient.presence.remote === "online"`, "first back");
     const third = await Tab.open(base);
-    await third.until(`document.getElementById("panel").textContent.includes("Line busy")`, "third waits");
-    await remote.eval(`window.callClient.close(), true`);
-    await third.until(`document.getElementById("presenceText").textContent === "Blimp online"`, "third promoted");
+    await third.until(`document.getElementById("presenceText").textContent === "Blimp online" && !document.getElementById("callBtn").disabled`, "third ready");
+    await remote.click("callBtn");
+    await blimp.until(`!!document.getElementById("acceptBtn")`, "blimp rings");
+    await blimp.click("acceptBtn");
+    await assertMediaFlows(remote, "remote");
+    assert.equal(await third.eval(`document.getElementById("presenceText").textContent`), "Blimp online");
+    await third.click("callBtn");
+    await third.until(`document.getElementById("toast").textContent.startsWith("Line busy")`, "third told busy");
+    await remote.click("hangupBtn");
+    await third.eval(`window.callClient.close(), true`);
   });
 
   // ---- remote screen control ----

@@ -1,9 +1,9 @@
 # stream-server
 
-Streaming server for BlimpMate: 1:1 WebRTC video calls between one BlimpMate device and one remote browser user, and remote control of the Blimp's Android screen.
+Streaming server for BlimpMate: 1:1 WebRTC video calls between one BlimpMate device and a remote browser user, and remote control of the Blimp's Android screen.
 
 - `https://<host>:8443/`: the remote user's page (presence, Call, Accept/Decline, Mute, Camera, Hang up).
-- `wss://<host>:8443/ws?role=remote`: signaling for the browser. The first browser is the remote user; later ones wait in line and are promoted when it leaves.
+- `wss://<host>:8443/ws?role=remote`: signaling for the browser. Any number of pages can be open and all see the Blimp as available; one call runs at a time, and pressing Call while one is ringing or in progress gets `busy` ("Line busy"). When the Blimp calls out, every open page rings and the first to answer gets the call.
 - `wss://<host>:8443/ws?role=blimp&token=blimpmate`: signaling for the Blimp (the password is fixed in the server and the Blimp app). A new Blimp connection replaces the old one.
 - `/healthz`: presence and call state as JSON.
 - `?as=blimp&token=…` on the page turns it into a Blimp test console.
@@ -56,9 +56,8 @@ Client → server: `invite`, `accept`, `decline`, `hangup` (cancels while ringin
 
 Server → client:
 - `welcome {role, iceServers, ringSeconds}`
-- `waiting {position}`
-- `presence {blimp, remote}` (each `offline | online | in_call`)
-- `call {state: idle|ringing|in_call, direction, offerer, reason}`; `reason` on idle is one of `declined | cancelled | no_answer | hangup | peer_left`
+- `presence {blimp, remote}` (each `offline | online | in_call`). A page not in the call sees the Blimp as `online` during someone else's call.
+- `call {state: idle|ringing|in_call, direction, offerer, reason}`; `reason` on idle is one of `declined | cancelled | no_answer | hangup | peer_left | answered_elsewhere` (another page answered the Blimp's call)
 - `signal {data}`
 - `error {error: unauthorized|peer_offline|busy}`
 

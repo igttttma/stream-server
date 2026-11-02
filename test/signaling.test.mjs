@@ -80,22 +80,67 @@ test("presence: remote sees the blimp come online and go offline", async () => {
   await remote.close();
 });
 
-test("only the first browser is the remote user; the next one waits and is promoted", async () => {
+test("every page connects; another page gets busy only when it calls during a call", async () => {
+  const blimp = new Peer(`role=blimp&token=${TOKEN}`);
+  await blimp.next({ type: "welcome" });
   const first = new Peer("role=remote");
   await first.next({ type: "welcome" });
   const second = new Peer("role=remote");
-  assert.equal((await second.next({ type: "waiting" })).position, 1);
-  // A waiting browser can't place calls
-  const blimp = new Peer(`role=blimp&token=${TOKEN}`);
-  await blimp.next({ type: "presence", remote: "online" });
+  await second.next({ type: "welcome", role: "remote" });
+  await second.next({ type: "presence", blimp: "online" });
+  first.send({ type: "invite" });
+  await blimp.next({ type: "call", state: "ringing", direction: "incoming" });
   second.send({ type: "invite" });
+  assert.equal((await second.next({ type: "error" })).error, "busy");
+  blimp.send({ type: "accept" });
+  await first.next({ type: "call", state: "in_call" });
+  await first.next({ type: "presence", blimp: "in_call" });
+  // The other page still sees the Blimp as available and no call of its own
   first.send({ type: "ping" });
   await first.next({ type: "pong" });
-  assert.ok(!blimp.messages.some((m) => m.type === "call" && m.state === "ringing"));
-  await first.close();
-  await second.next({ type: "welcome", role: "remote" });
-  await second.close();
-  await blimp.close();
+  assert.ok(!second.messages.some((m) => (m.type === "call" && m.state !== "idle") || (m.type === "presence" && m.blimp !== "online")));
+  second.send({ type: "signal", data: { intruder: true } });
+  second.send({ type: "invite" });
+  assert.equal((await second.next({ type: "error" })).error, "busy");
+  first.send({ type: "hangup" });
+  await blimp.next({ type: "call", state: "idle" });
+  assert.ok(!blimp.messages.some((m) => m.type === "signal"));
+  second.send({ type: "invite" });
+  await blimp.next({ type: "call", state: "ringing", direction: "incoming" });
+  await second.next({ type: "call", state: "ringing", direction: "outgoing" });
+  for (const p of [first, second, blimp]) await p.close();
+});
+
+test("the blimp rings every page; a decline leaves the others ringing; the first answer wins", async () => {
+  const blimp = new Peer(`role=blimp&token=${TOKEN}`);
+  await blimp.next({ type: "welcome" });
+  const pages = [new Peer("role=remote"), new Peer("role=remote"), new Peer("role=remote")];
+  for (const p of pages) {
+    await p.next({ type: "welcome" });
+    await p.next({ type: "call", state: "idle" }); // initial state
+  }
+  const [a, b, c] = pages;
+  blimp.send({ type: "invite" });
+  for (const p of pages) await p.next({ type: "call", state: "ringing", direction: "incoming" });
+  a.send({ type: "decline" });
+  assert.equal((await a.next({ type: "call" })).state, "idle");
+  c.send({ type: "accept" });
+  assert.equal((await b.next({ type: "call", state: "idle" })).reason, "answered_elsewhere");
+  assert.equal((await c.next({ type: "call", state: "in_call" })).offerer, false);
+  assert.equal((await blimp.next({ type: "call", state: "in_call" })).offerer, true);
+  blimp.send({ type: "signal", data: { description: { type: "offer", sdp: "x" } } });
+  assert.equal((await c.next({ type: "signal" })).data.description.type, "offer");
+  b.send({ type: "invite" });
+  assert.equal((await b.next({ type: "error" })).error, "busy");
+  assert.ok(!a.messages.some((m) => m.type === "signal") && !b.messages.some((m) => m.type === "signal"));
+  // Everyone declining ends the ring
+  c.send({ type: "hangup" });
+  await blimp.next({ type: "call", state: "idle" });
+  blimp.send({ type: "invite" });
+  for (const p of pages) await p.next({ type: "call", state: "ringing" });
+  for (const p of pages) p.send({ type: "decline" });
+  assert.equal((await blimp.next({ type: "call", state: "idle" })).reason, "declined");
+  for (const p of [...pages, blimp]) await p.close();
 });
 
 async function pair() {
