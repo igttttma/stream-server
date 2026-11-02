@@ -1,6 +1,7 @@
 // Stream server for BlimpMate:
 // - 1:1 video calls between one Blimp and remote browser users (/).
 // - Remote screen control of the Blimp's Android (/screen; see screen.mjs).
+// - Live view of the Blimp's camera (/camera; see camera.mjs).
 // HTTPS serves the pages; WSS /ws carries presence, call/session control and
 // WebRTC signaling. Media flows peer to peer (or through TURN), never here.
 import { createServer } from "node:https";
@@ -11,6 +12,7 @@ import { join, normalize, extname, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { createScreenHub } from "./screen.mjs";
+import { createCameraHub } from "./camera.mjs";
 
 const ROOT = dirname(fileURLToPath(import.meta.url));
 const PUBLIC_DIR = join(ROOT, "public");
@@ -27,6 +29,8 @@ const CONFIG = {
   // Remote screen control: viewers sign in with SCREEN_PASSWORD (unset = off).
   // The agent needs no token: the first device to connect holds the slot.
   screenPassword: process.env.SCREEN_PASSWORD || "",
+  // Camera view pages sign in with CAMERA_PASSWORD (default: SCREEN_PASSWORD; unset = off)
+  cameraPassword: process.env.CAMERA_PASSWORD || process.env.SCREEN_PASSWORD || "",
   heartbeatSeconds: 15,
   // STUN/TURN for the browsers. TURN_SECRET enables coturn's time-limited
   // credentials (use-auth-secret / static-auth-secret).
@@ -227,16 +231,24 @@ const screenHub = createScreenHub({
   log,
 });
 
+const cameraHub = createCameraHub({
+  viewerPassword: CONFIG.cameraPassword,
+  tokenMatches,
+  stopGraceMs: Number(process.env.CAMERA_STOP_GRACE_MS || 8000),
+  send,
+  log,
+});
+
 // ---- HTTPS + WSS ----
 
-const PAGES = { "/": "index.html", "/screen": "screen.html" };
+const PAGES = { "/": "index.html", "/screen": "screen.html", "/camera": "camera.html" };
 
 async function serveStatic(req, res) {
   const url = new URL(req.url, "https://localhost");
   if (url.pathname === "/healthz") {
     res.writeHead(200, { "content-type": "application/json" });
     return res.end(JSON.stringify({ ok: true, blimp: blimp ? "online" : "offline", remotes: remotes.size,
-      call: call.state, screen: screenHub.status() }));
+      call: call.state, screen: screenHub.status(), camera: cameraHub.status() }));
   }
   // /screen/ -> /screen: the pages use relative links, which break under a trailing slash
   if (url.pathname.length > 1 && url.pathname.endsWith("/")) {
@@ -264,6 +276,7 @@ if (!existsSync(CONFIG.certFile) || !existsSync(CONFIG.keyFile)) {
   process.exit(1);
 }
 if (!screenHub.enabled) log("Screen control is off (set SCREEN_PASSWORD to turn it on)");
+if (!cameraHub.enabled) log("Camera view is off (set CAMERA_PASSWORD or SCREEN_PASSWORD to turn it on)");
 
 const server = createServer(
   { cert: readFileSync(CONFIG.certFile), key: readFileSync(CONFIG.keyFile) },
@@ -292,6 +305,9 @@ wss.on("connection", (ws, req) => {
   } else if (role === "screen" || role === "viewer") {
     screenHub.accept(role, ws, params, req.socket.remoteAddress);
     if (ws.readyState !== ws.OPEN) return;
+  } else if (role === "camera" || role === "camera_viewer") {
+    cameraHub.accept(role, ws, params, req.socket.remoteAddress);
+    if (ws.readyState !== ws.OPEN) return;
   } else {
     return ws.close(4000, "role required");
   }
@@ -299,19 +315,22 @@ wss.on("connection", (ws, req) => {
   ws.isAlive = true;
   ws.on("pong", () => { ws.isAlive = true; });
   const screenRole = ws.role === "screen" || ws.role === "viewer";
+  const cameraRole = ws.role === "camera" || ws.role === "camera_viewer";
   ws.on("message", (raw, isBinary) => {
     if (isBinary) {
       if (screenRole) screenHub.handleBinary(ws, raw);
+      else if (cameraRole) cameraHub.handleBinary(ws, raw);
       return;
     }
     let msg;
     try { msg = JSON.parse(raw); } catch { return; }
     if (!msg || typeof msg.type !== "string") return;
     if (screenRole) return screenHub.handle(ws, msg);
+    if (cameraRole) return cameraHub.handle(ws, msg);
     if (ws !== blimp && !remotes.has(ws)) return; // replaced connections can't act
     handleControl(ws, msg);
   });
-  ws.on("close", () => (screenRole ? screenHub.detach(ws) : detach(ws)));
+  ws.on("close", () => (screenRole ? screenHub.detach(ws) : cameraRole ? cameraHub.detach(ws) : detach(ws)));
 });
 
 // Heartbeat: drop connections that stop answering pings (this is what marks

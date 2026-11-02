@@ -1,6 +1,6 @@
 # stream-server
 
-Streaming server for BlimpMate: 1:1 WebRTC video calls between one BlimpMate device and a remote browser user, and remote control of the Blimp's Android screen.
+Streaming server for BlimpMate: 1:1 WebRTC video calls between one BlimpMate device and a remote browser user, remote control of the Blimp's Android screen, and a live view of the Blimp's camera.
 
 - `https://<host>:8443/`: the remote user's page (presence, Call, Accept/Decline, Mute, Camera, Hang up).
 - `wss://<host>:8443/ws?role=remote`: signaling for the browser. Any number of pages can be open and all see the Blimp as available; one call runs at a time, and pressing Call while one is ringing or in progress gets `busy` ("Line busy"). When the Blimp calls out, every open page rings and the first to answer gets the call.
@@ -105,3 +105,30 @@ Input (viewer → agent in `input {data}`, each acked with `{t: "ack", id, ok, e
 `{t: "gesture", points: [[x, y, ms], ...]}` (x, y are fractions of the screen),
 `{t: "key", key: back|home|recents|notifications|enter|backspace|blimp_app}`,
 `{t: "text", text}`, `{t: "quality", preset: low|medium|high}`, `{t: "keyframe"}` (not acked).
+
+## Live camera view
+
+`https://<host>:8443/camera`: what the Blimp's camera sees, live. Any number of
+pages can watch. The page plays as soon as it opens, reconnects by itself, keeps
+the phone awake, and shows why the picture is paused. The streamer is native code
+in the Blimp app (`CameraView.java`), using the same stream server address as calls.
+
+- Pages sign in with `CAMERA_PASSWORD` (default: `SCREEN_PASSWORD`; neither = off).
+  The browser remembers it; a link can carry it: `/camera#pw=<password>`.
+- The Blimp opens the camera only while someone watches; it closes 8 s after the
+  last page leaves or is hidden.
+- Lowest priority: the AI's photo tool and video calls take the camera, and the
+  view pauses (`paused` with reason `photo` / `call`) until they are done.
+- 4:3 up to 1440x1080, 30 fps, hardware H.264 (Camera2 renders into the encoder),
+  0.35-4 Mbps following the connection: the Blimp cuts the bitrate when data piles up
+  on its uplink or a page falls behind, and raises it again after clear seconds.
+- A page further behind than about a second of video (from its `ack`s) gets only
+  keyframes until it catches up; a page stuck for 10 s no longer lowers the bitrate
+  for the others.
+
+Protocol (details in `camera.mjs`), binary packets as for the screen:
+- Blimp: `wss://<host>:8443/ws?role=camera&token=blimpmate`; sends `info`, `camera_state
+  {state: idle|starting|streaming|paused|error, reason, width, height, rotation, kbps}`;
+  gets `camera_start`, `camera_stop`, `keyframe`, `congestion`
+- Page: `wss://<host>:8443/ws?role=camera_viewer&password=…`; sends `watch {on}`,
+  `ack {bytes}`, `keyframe`; gets `camera {agent: online|offline, state, …}`

@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Blimp Camera</title>
+<style>
+  :root {
+    --bg: #000; --text: #f3f4f6; --muted: #a3a9b4; --surface: rgba(18, 20, 24, .72);
+    --border: rgba(255, 255, 255, .14); --accent: #5b8cff; --live: #ff4d4f; --ok: #3ccf7d; --warn: #f0b429;
+    --field: #15181d;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) { --bg: #000; }
+  }
+  :root[data-theme="dark"] { --bg: #000; }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--text); overflow: hidden;
+    font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+  }
+  #stage { position: fixed; inset: 0; background: #000; }
+  /* The picture fills the screen (edges cropped); "Fit" shows all of it */
+  #video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: filter .3s, opacity .3s; }
+  body.fit #video { object-fit: contain; }
+  /* Phones held upright: the view turns sideways, so it is watched in landscape
+     (iPhone browsers can't lock the orientation) */
+  @media (orientation: portrait) and (pointer: coarse) {
+    body:not(.signin) #stage {
+      inset: auto; top: 0; left: 100vw; width: 100vh; width: 100dvh; height: 100vw;
+      transform-origin: top left; transform: rotate(90deg);
+    }
+  }
+  body:not(.has-frame) #video { opacity: 0; }
+  body.dim #video { filter: brightness(.35) blur(2px); }
+
+  /* top bar */
+  .bar {
+    position: absolute; left: 0; right: 0; top: 0; display: flex; align-items: center; gap: 10px;
+    padding: calc(10px + env(safe-area-inset-top)) calc(14px + env(safe-area-inset-right)) 10px calc(14px + env(safe-area-inset-left));
+    background: linear-gradient(rgba(0,0,0,.6), rgba(0,0,0,0)); transition: opacity .3s; z-index: 3;
+  }
+  .bar h1 { margin: 0; font-size: 16px; font-weight: 600; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+    background: var(--surface); border: 1px solid var(--border); font-size: 13px; color: var(--muted);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0;
+  }
+  .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .badge[data-s="live"] { color: var(--text); }
+  .badge[data-s="live"] .dot { background: var(--live); animation: pulse 1.6s infinite; }
+  .badge[data-s="wait"] .dot { background: var(--warn); }
+  .badge[data-s="off"] .dot { background: var(--muted); }
+  @keyframes pulse { 50% { opacity: .35; } }
+  @media (prefers-reduced-motion: reduce) { .badge .dot { animation: none !important; } }
+  .spacer { flex: 1; }
+  .icon {
+    display: inline-flex; align-items: center; justify-content: center; width: 40px; height: 40px; flex: none;
+    border-radius: 50%; border: 1px solid var(--border); background: var(--surface); color: var(--text); cursor: pointer;
+    padding: 0;
+  }
+  .icon svg { width: 20px; height: 20px; }
+  .icon[aria-pressed="true"] { border-color: var(--accent); }
+  body.idle .bar, body.idle #stats { opacity: 0; }
+  body.idle { cursor: none; }
+
+  #stats {
+    position: absolute; left: calc(14px + env(safe-area-inset-left)); bottom: calc(12px + env(safe-area-inset-bottom));
+    font-size: 12px; color: #fff; text-shadow: 0 1px 3px #000; font-variant-numeric: tabular-nums;
+    pointer-events: none; transition: opacity .3s; z-index: 3;
+  }
+  #stats[hidden] { display: none; }
+
+  /* message over the picture */
+  #message {
+    position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 10px; padding: 24px; text-align: center; z-index: 2; pointer-events: none;
+  }
+  #message[hidden] { display: none; }
+  #message h2 { margin: 0; font-size: 20px; font-weight: 600; }
+  #message p { margin: 0; color: var(--muted); max-width: 420px; }
+  .spinner {
+    width: 34px; height: 34px; border-radius: 50%; border: 3px solid rgba(255,255,255,.18); border-top-color: #fff;
+    animation: spin 0.9s linear infinite;
+  }
+  .spinner[hidden] { display: none; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 3s; } }
+
+  /* sign in */
+  #signin {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 16px; z-index: 4;
+    background: #0f1115;
+  }
+  #signin[hidden] { display: none; }
+  #signin form { width: 100%; max-width: 340px; display: flex; flex-direction: column; gap: 12px; text-align: center; }
+  #signin h2 { margin: 0; font-size: 22px; font-weight: 600; }
+  #signin p { margin: 0 0 6px; color: var(--muted); }
+  #signin input {
+    font: inherit; padding: 12px 14px; border-radius: 10px; border: 1px solid var(--border);
+    background: var(--field); color: var(--text);
+  }
+  #signin button {
+    font: inherit; font-weight: 600; border: 0; border-radius: 999px; padding: 12px 26px; cursor: pointer;
+    background: var(--accent); color: #fff;
+  }
+  #signinError { color: #ff8080; min-height: 1.4em; font-size: 14px; }
+</style>
+</head>
+<body class="dim">
+<div id="stage">
+  <canvas id="video" aria-label="Live view of the Blimp's camera"></canvas>
+
+  <div class="bar">
+    <h1>Blimp camera</h1>
+    <span class="badge" id="badge" data-s="off"><span class="dot"></span><span id="badgeText">Connecting</span></span>
+    <span class="spacer"></span>
+    <button class="icon" id="statsBtn" type="button" title="Stream details" aria-label="Stream details" aria-pressed="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.5"/></svg>
+    </button>
+    <button class="icon" id="fitBtn" type="button" title="Show the whole picture" aria-label="Show the whole picture" aria-pressed="false">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3" y="6" width="18" height="12" rx="1.5"/><rect x="7" y="9" width="10" height="6" rx="1"/></svg>
+    </button>
+    <button class="icon" id="fsBtn" type="button" title="Full screen" aria-label="Full screen">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5"/></svg>
+    </button>
+  </div>
+
+  <div id="message">
+    <div class="spinner" id="spinner"></div>
+    <h2 id="msgTitle">Connecting…</h2>
+    <p id="msgText"></p>
+  </div>
+
+  <div id="stats" hidden></div>
+
+  <div id="signin" hidden>
+    <form id="signinForm" autocomplete="on">
+      <h2>Blimp camera</h2>
+      <p>Enter the viewing password. This browser remembers it.</p>
+      <input type="password" id="password" autocomplete="current-password" placeholder="Password" required>
+      <button type="submit">Watch</button>
+      <div id="signinError" role="alert"></div>
+    </form>
+  </div>
+</div>
+
+<script type="module">
+import { CameraViewer } from "./camera-client.mjs";
+
+const $ = (id) => document.getElementById(id);
+const STORE = "blimp.camera.password";
+const store = {
+  get() { try { return localStorage.getItem(STORE) || ""; } catch { return ""; } },
+  set(v) { try { v ? localStorage.setItem(STORE, v) : localStorage.removeItem(STORE); } catch {} },
+};
+
+if (!("VideoDecoder" in window)) {
+  $("signin").hidden = true;
+  show({ title: "This browser can't play the camera", text: "Open this page in a current Chrome, Edge, Safari (iOS 16.4+) or Firefox.", spin: false });
+  throw new Error("WebCodecs missing");
+}
+
+const wsUrl = new URL("ws", location.href);
+wsUrl.protocol = location.protocol === "https:" ? "wss:" : "ws:";
+const viewer = new CameraViewer({ url: wsUrl.toString(), canvas: $("video") });
+window.cameraViewer = viewer; // for debugging from the console
+
+// A shared link may carry the password: #pw=...
+const fromLink = new URLSearchParams(location.hash.slice(1)).get("pw");
+if (fromLink) {
+  store.set(fromLink);
+  history.replaceState(null, "", location.pathname + location.search);
+}
+
+function signIn(password) {
+  $("signin").hidden = true;
+  document.body.classList.remove("signin");
+  viewer.watching = !document.hidden;
+  viewer.connect(password);
+  render();
+}
+
+function askPassword(error = "") {
+  $("signin").hidden = false;
+  document.body.classList.add("signin");
+  $("signinError").textContent = error;
+  $("password").value = "";
+  setTimeout(() => $("password").focus(), 0);
+}
+
+$("signinForm").onsubmit = (e) => {
+  e.preventDefault();
+  const pw = $("password").value;
+  if (!pw) return;
+  store.set(pw);
+  signIn(pw);
+};
+
+// ---- what the page says ----
+
+function show({ title, text = "", spin = true }) {
+  $("message").hidden = false;
+  $("msgTitle").textContent = title;
+  $("msgText").textContent = text;
+  $("spinner").hidden = !spin;
+}
+
+function badge(state, text) {
+  $("badge").dataset.s = state;
+  $("badgeText").textContent = text;
+}
+
+let hasFrame = false;
+
+function render() {
+  const cam = viewer.camera;
+  const live = hasFrame && viewer.connected && cam.agent === "online" && cam.state === "streaming";
+  document.body.classList.toggle("has-frame", hasFrame);
+  document.body.classList.toggle("dim", !live);
+  // Controls stay visible while there's something to read
+  if (!live) document.body.classList.remove("idle");
+  if (live) {
+    $("message").hidden = true;
+    badge("live", "Live");
+    return;
+  }
+  if (!viewer.connected) {
+    badge("wait", "Reconnecting");
+    show({ title: navigator.onLine ? "Connecting…" : "No internet connection", text: navigator.onLine ? "" : "The view comes back by itself when you're online." });
+  } else if (cam.agent !== "online") {
+    badge("off", "Blimp offline");
+    show({ title: "The Blimp is offline", text: "The view starts by itself as soon as the Blimp is back online.", spin: false });
+  } else if (cam.state === "paused") {
+    const reason = String(cam.reason || "");
+    badge("wait", "Paused");
+    if (reason === "photo") show({ title: "The Blimp is taking a photo", text: "The view is back in a moment." });
+    else if (reason === "call") show({ title: "The camera is in a video call", text: "The view comes back when the call ends." });
+    else show({ title: "The camera is busy", text: "The view comes back when it's free." });
+  } else if (cam.state === "error") {
+    badge("wait", "Retrying");
+    show({ title: "The camera isn't available right now", text: `${cam.reason ? `${cam.reason}. ` : ""}Trying again…` });
+  } else if (hasFrame) {
+    badge("wait", "Resuming");
+    show({ title: "Resuming…" });
+  } else {
+    badge("wait", "Starting");
+    show({ title: "Starting the Blimp's camera…" });
+  }
+}
+
+viewer.addEventListener("status", render);
+viewer.addEventListener("camera", () => {
+  // Paused or restarting: the last picture stays, dimmed, under the message
+  render();
+  updateStats();
+});
+viewer.addEventListener("frame", () => {
+  if (!hasFrame) {
+    hasFrame = true;
+    render();
+  } else if (document.body.classList.contains("dim")) {
+    render();
+  }
+});
+viewer.addEventListener("error", (e) => {
+  const { error, fatal } = e.detail;
+  if (!fatal) {
+    console.warn("camera:", error);
+    return;
+  }
+  if (error === "unauthorized") {
+    const tried = Boolean(store.get());
+    store.set("");
+    askPassword(tried ? "Wrong password." : "");
+  } else if (error === "locked") {
+    askPassword("Too many wrong passwords. Wait a minute, then try again.");
+  } else {
+    $("signin").hidden = true;
+    show({ title: "The camera view is turned off on this server", text: "Set CAMERA_PASSWORD (or SCREEN_PASSWORD) for the stream server.", spin: false });
+    badge("off", "Off");
+  }
+});
+
+// ---- stats ----
+
+let lastFrames = 0, lastBytes = 0, lastAt = performance.now();
+let statsOn = false;
+function updateStats() {
+  const now = performance.now();
+  const secs = Math.max(0.001, (now - lastAt) / 1000);
+  const fps = (viewer.framesDrawn - lastFrames) / secs;
+  const kbps = ((viewer.bytesReceived - lastBytes) * 8) / 1000 / secs;
+  lastFrames = viewer.framesDrawn; lastBytes = viewer.bytesReceived; lastAt = now;
+  if (!statsOn) return;
+  const cam = viewer.camera;
+  const parts = [];
+  if (viewer.width) parts.push(`${viewer.width}×${viewer.height}`);
+  parts.push(`${fps.toFixed(0)} fps`, `${Math.round(kbps)} kbps`);
+  if (cam.kbps) parts.push(`target ${cam.kbps} kbps`);
+  if (cam.device?.model) parts.push(cam.device.model);
+  $("stats").textContent = parts.join(" · ");
+}
+setInterval(updateStats, 1000);
+$("statsBtn").onclick = () => {
+  statsOn = !statsOn;
+  $("statsBtn").setAttribute("aria-pressed", String(statsOn));
+  $("stats").hidden = !statsOn;
+  updateStats();
+};
+
+// ---- full screen, idle controls ----
+
+const stage = $("stage");
+$("fsBtn").onclick = async () => {
+  try {
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      await (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    } else {
+      const el = document.documentElement;
+      await (el.requestFullscreen || el.webkitRequestFullscreen).call(el);
+      // Phones: turn the picture sideways for a 4:3 landscape view
+      await screen.orientation?.lock?.("landscape").catch(() => {});
+    }
+  } catch {}
+};
+$("video").ondblclick = () => $("fsBtn").click();
+
+// Fill the screen (default) or fit the whole picture; remembered
+const FIT = "blimp.camera.fit";
+function setFit(on) {
+  document.body.classList.toggle("fit", on);
+  $("fitBtn").setAttribute("aria-pressed", String(on));
+  $("fitBtn").title = on ? "Fill the screen" : "Show the whole picture";
+  $("fitBtn").setAttribute("aria-label", $("fitBtn").title);
+  try { localStorage.setItem(FIT, on ? "1" : ""); } catch {}
+}
+try { setFit(localStorage.getItem(FIT) === "1"); } catch { setFit(false); }
+$("fitBtn").onclick = () => setFit(!document.body.classList.contains("fit"));
+
+// Phones: the first tap on the picture goes full screen in landscape (where the browser allows it)
+if (matchMedia("(pointer: coarse)").matches) {
+  $("video").addEventListener("click", function once() {
+    if (!document.fullscreenElement && !document.webkitFullscreenElement) $("fsBtn").click();
+    $("video").removeEventListener("click", once);
+  });
+}
+if (!document.documentElement.requestFullscreen && !document.documentElement.webkitRequestFullscreen) $("fsBtn").hidden = true;
+
+let idleTimer = null;
+function wake() {
+  document.body.classList.remove("idle");
+  clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    if (!document.body.classList.contains("dim")) document.body.classList.add("idle");
+  }, 3500);
+}
+for (const ev of ["pointermove", "pointerdown", "keydown"]) document.addEventListener(ev, wake, { passive: true });
+wake();
+
+// ---- keep the phone awake, rest the camera when hidden ----
+
+let wakeLock = null;
+async function holdScreen() {
+  if (document.hidden || wakeLock || !navigator.wakeLock) return;
+  try {
+    wakeLock = await navigator.wakeLock.request("screen");
+    wakeLock.addEventListener("release", () => { wakeLock = null; });
+  } catch {}
+}
+document.addEventListener("visibilitychange", () => {
+  viewer.setWatching(!document.hidden);
+  if (!document.hidden) {
+    holdScreen();
+    if (!viewer.connected) viewer.reconnect();
+  }
+});
+window.addEventListener("online", () => viewer.reconnect());
+window.addEventListener("offline", render);
+holdScreen();
+
+// ---- start ----
+
+const saved = store.get();
+if (saved) signIn(saved);
+else askPassword();
+</script>
+</body>
+</html>
