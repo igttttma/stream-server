@@ -2,6 +2,7 @@
 // - 1:1 video calls between one Blimp and remote browser users (/).
 // - Remote screen control of the Blimp's Android (/screen; see screen.mjs).
 // - Live view of the Blimp's camera (/camera; see camera.mjs).
+// - Wi-Fi setup of the Blimp over Bluetooth (/setup: a Web Bluetooth page, no server side).
 // HTTPS serves the pages; WSS /ws carries presence, call/session control and
 // WebRTC signaling. Media flows peer to peer (or through TURN), never here.
 import { createServer } from "node:https";
@@ -238,7 +239,7 @@ const cameraHub = createCameraHub({
 
 // ---- HTTPS + WSS ----
 
-const PAGES = { "/": "index.html", "/screen": "screen.html", "/camera": "camera.html" };
+const PAGES = { "/": "index.html", "/screen": "screen.html", "/camera": "camera.html", "/setup": "setup.html" };
 
 async function serveStatic(req, res) {
   const url = new URL(req.url, "https://localhost");
